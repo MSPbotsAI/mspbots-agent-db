@@ -1,0 +1,19 @@
+services:
+  mspbots-agent-data-mcp:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: production
+    image: mspbots-agent-data-mcp:latest
+    container_name: mspbots-agent-data-mcp-server
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      - MCP_HTTP_PORT=8080
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s

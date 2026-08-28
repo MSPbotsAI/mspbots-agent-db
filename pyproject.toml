@@ -1,0 +1,28 @@
+[project]
+name = "mspbots-agent-data-mcp"
+version = "0.1.0"
+description = "MCP server for the MSPbots Agent Data Core (pg-data-ingest) read API — schema discovery, filtered queries, and single-record lookups, scoped to one agent's business-log data"
+requires-python = ">=3.12"
+dependencies = [
+    "mcp[cli]>=1.9.0,<2.0",
+    "httpx>=0.27.0",
+    "pydantic-settings>=2.3.0",
+    "uvicorn>=0.30.0",
+    "starlette>=0.41.0",
+]
+
+[project.scripts]
+mspbots-agent-data-mcp = "mspbots_agent_data_mcp.__main__:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/mspbots_agent_data_mcp"]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
+]
