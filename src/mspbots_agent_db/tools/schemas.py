@@ -19,7 +19,7 @@ from ._common import NO_TOKEN
 
 def register(mcp: FastMCP, client_factory: Callable[[], AgentDataClient | None]) -> None:
     @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
-    async def mspbotsagentdata_get_schemas(
+    async def mspbotsagentdb_get_schemas(
         business_type: Annotated[
             str | None,
             Field(
@@ -32,7 +32,7 @@ def register(mcp: FastMCP, client_factory: Callable[[], AgentDataClient | None])
     ) -> str:
         """List the field structures this agent's logged data actually has.
 
-        Call this FIRST, before mspbotsagentdata_query_records — e.g. "what
+        Call this FIRST, before mspbotsagentdb_query_records — e.g. "what
         fields does the ticket_sync data have" — so filters use real field
         names, not guesses. Each entry: business_type, schema_version,
         json_schema, source ("client" = agent-declared, "inferred" = server

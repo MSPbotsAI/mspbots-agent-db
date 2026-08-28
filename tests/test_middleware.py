@@ -5,9 +5,9 @@ leakage across requests).
 
 from starlette.testclient import TestClient
 
-from mspbots_agent_data_mcp.__main__ import _build_http_app
-from mspbots_agent_data_mcp.config import Settings
-from mspbots_agent_data_mcp.server import create_mcp_server, get_client_from_context
+from mspbots_agent_db.__main__ import _build_http_app
+from mspbots_agent_db.config import Settings
+from mspbots_agent_db.server import create_mcp_server, get_client_from_context
 
 
 def _make_app():
@@ -60,7 +60,7 @@ def test_header_present_reaches_request_context(monkeypatch):
     # are reset afterward (no leakage to the next request).
     import asyncio
 
-    from mspbots_agent_data_mcp.server import GatewayTokenMiddleware, _gateway_creds_var
+    from mspbots_agent_db.server import GatewayTokenMiddleware, _gateway_creds_var
 
     settings = Settings()
     seen = {}

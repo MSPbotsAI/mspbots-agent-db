@@ -23,7 +23,7 @@ _MAX_LIMIT = 100
 
 def register(mcp: FastMCP, client_factory: Callable[[], AgentDataClient | None]) -> None:
     @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
-    async def mspbotsagentdata_query_records(
+    async def mspbotsagentdb_query_records(
         filters: Annotated[
             list[dict] | None,
             Field(
@@ -33,7 +33,7 @@ def register(mcp: FastMCP, client_factory: Callable[[], AgentDataClient | None])
                     '{"field": "...", "op": "...", "value": ...}. '
                     "field is one of business_type | record_id | created_at | updated_at "
                     "| schema_version, OR a data.<key> path from "
-                    "mspbotsagentdata_get_schemas (up to 5 dot-levels deep, e.g. "
+                    "mspbotsagentdb_get_schemas (up to 5 dot-levels deep, e.g. "
                     '"data.ticket.assignee.name") — any other field is rejected. '
                     "op is one of eq | neq | gt | gte | lt | lte | in | contains | exists. "
                     "gt/gte/lt/lte do numeric or timestamp comparison; a row whose value "
@@ -67,7 +67,7 @@ def register(mcp: FastMCP, client_factory: Callable[[], AgentDataClient | None])
         Use for "show me the ticket_sync records with status open", "how
         many refund records over $500 in the last week", "find record
         T-1042" (id-only lookups also work here, but
-        mspbotsagentdata_get_record is more direct for one known id).
+        mspbotsagentdb_get_record is more direct for one known id).
         Results are always sorted newest first (created_at DESC).
 
         PAGINATION GOTCHA: next_cursor is non-null on every full page, even
@@ -95,13 +95,13 @@ def register(mcp: FastMCP, client_factory: Callable[[], AgentDataClient | None])
             return e.to_envelope()
 
     @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
-    async def mspbotsagentdata_get_record(
+    async def mspbotsagentdb_get_record(
         record_id: Annotated[str, Field(description="Required record ID.")],
     ) -> str:
         """Get one record's full detail by its exact record_id.
 
         Use once you already have a specific record_id (e.g. from
-        mspbotsagentdata_query_records, or the operator names one directly
+        mspbotsagentdb_query_records, or the operator names one directly
         — "what's in record T-1042"). Returns id (an internal, monotonically
         increasing surrogate key — usable as a watermark, not the same as
         record_id), record_id, business_type, data (the full JSON as

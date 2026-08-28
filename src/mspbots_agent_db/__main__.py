@@ -33,7 +33,7 @@ def main() -> None:
 
     app = _build_http_app(mcp, settings)
     print(
-        f"MSPbots Agent Data MCP server listening on http://{settings.mcp_http_host}:{settings.mcp_http_port}/mcp",
+        f"MSPbots Agent DB MCP server listening on http://{settings.mcp_http_host}:{settings.mcp_http_port}/mcp",
         file=sys.stderr,
     )
     uvicorn.run(app, host=settings.mcp_http_host, port=settings.mcp_http_port)

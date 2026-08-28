@@ -1,4 +1,4 @@
-# mspbots-agent-data-mcp
+# mspbots-agent-db
 
 MCP server for the **MSPbots Agent Data Core** (`pg-data-ingest`) — a per-tenant
 service where every agent's business-log records live in a single JSONB table,
@@ -17,12 +17,12 @@ This lets an agent (or a builder debugging one) look at the business data that
 agent has already logged — never another agent's, and never write/delete it:
 
 - "What kinds of records has this agent logged, and what fields do they have?" →
-  `mspbotsagentdata_get_schemas`
+  `mspbotsagentdb_get_schemas`
 - "Show me the ticket_sync records with status open" / "how many refunds over
-  $500 last week" → `mspbotsagentdata_query_records`
-- "What's in record T-1042?" → `mspbotsagentdata_get_record`
+  $500 last week" → `mspbotsagentdb_query_records`
+- "What's in record T-1042?" → `mspbotsagentdb_get_record`
 - "How much data has this agent logged, is it near quota?" →
-  `mspbotsagentdata_get_stats`
+  `mspbotsagentdb_get_stats`
 
 Writing new records, deleting them, and admin operations (`init`, `DELETE
 /agents/:id`, `POST /maintenance/run`, listing every agent) are **intentionally
@@ -38,10 +38,10 @@ doesn't take an `agent_id` argument either.
 
 | Tool | 功能 | 参数 |
 |---|---|---|
-| `mspbotsagentdata_get_schemas` | 列出该 agent 已登记的数据字典（business_type/schema_version/json_schema/source） | `business_type`(可选，按业务类型过滤) |
-| `mspbotsagentdata_query_records` | 受限 Filter DSL 条件查询 + keyset 游标分页，主力读接口 | `filters`(可选，≤10个，AND 关系)、`limit`(默认 20，上限 100)、`cursor`(可选，翻页用) |
-| `mspbotsagentdata_get_record` | 按 record_id 读单条记录详情 | `record_id`(必填) |
-| `mspbotsagentdata_get_stats` | 该 agent 的存储用量与业务分布统计 | 无 |
+| `mspbotsagentdb_get_schemas` | 列出该 agent 已登记的数据字典（business_type/schema_version/json_schema/source） | `business_type`(可选，按业务类型过滤) |
+| `mspbotsagentdb_query_records` | 受限 Filter DSL 条件查询 + keyset 游标分页，主力读接口 | `filters`(可选，≤10个，AND 关系)、`limit`(默认 20，上限 100)、`cursor`(可选，翻页用) |
+| `mspbotsagentdb_get_record` | 按 record_id 读单条记录详情 | `record_id`(必填) |
+| `mspbotsagentdb_get_stats` | 该 agent 的存储用量与业务分布统计 | 无 |
 
 `filters[]` 每项 `{ field, op, value }`：
 
@@ -69,7 +69,7 @@ The server starts on `http://localhost:8080`.
 
 ```bash
 uv sync
-python -m mspbots_agent_data_mcp
+python -m mspbots_agent_db
 ```
 
 ## Health Check
@@ -124,7 +124,7 @@ curl -X POST http://localhost:8080/mcp \
     "jsonrpc": "2.0",
     "id": 1,
     "method": "tools/call",
-    "params": { "name": "mspbotsagentdata_get_schemas", "arguments": {} }
+    "params": { "name": "mspbotsagentdb_get_schemas", "arguments": {} }
   }'
 ```
 

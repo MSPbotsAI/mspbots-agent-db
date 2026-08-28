@@ -10,16 +10,16 @@ import json
 import pytest
 from mcp.server.fastmcp import FastMCP
 
-from mspbots_agent_data_mcp.api_client import AgentDataClient, AgentDataError
-from mspbots_agent_data_mcp.config import Settings
-from mspbots_agent_data_mcp.server import create_mcp_server
+from mspbots_agent_db.api_client import AgentDataClient, AgentDataError
+from mspbots_agent_db.config import Settings
+from mspbots_agent_db.server import create_mcp_server
 
 # name -> (required params, expected annotation hint set to True)
 EXPECTED_TOOLS = {
-    "mspbotsagentdata_get_schemas": (set(), {"readOnlyHint"}),
-    "mspbotsagentdata_query_records": (set(), {"readOnlyHint"}),
-    "mspbotsagentdata_get_record": ({"record_id"}, {"readOnlyHint"}),
-    "mspbotsagentdata_get_stats": (set(), {"readOnlyHint"}),
+    "mspbotsagentdb_get_schemas": (set(), {"readOnlyHint"}),
+    "mspbotsagentdb_query_records": (set(), {"readOnlyHint"}),
+    "mspbotsagentdb_get_record": ({"record_id"}, {"readOnlyHint"}),
+    "mspbotsagentdb_get_stats": (set(), {"readOnlyHint"}),
 }
 
 # This tool's description exceeds the SOP's 500-char guideline (§2.2, a
@@ -28,7 +28,7 @@ EXPECTED_TOOLS = {
 # next_cursor-is-never-null-on-a-full-page pagination gotcha — trimming any
 # of these would leave an agent guessing at values the API will just 400 on.
 _LONG_DESCRIPTION_EXCEPTIONS = {
-    "mspbotsagentdata_query_records",
+    "mspbotsagentdb_query_records",
 }
 
 
@@ -125,11 +125,11 @@ async def test_query_records_clamps_limit_before_calling_api():
             captured["body"] = json_body
             return {"records": [], "next_cursor": None}
 
-    from mspbots_agent_data_mcp.tools import records
+    from mspbots_agent_db.tools import records
 
     mcp = FastMCP(name="test")
     records.register(mcp, lambda: _StubClient())
-    await mcp.call_tool("mspbotsagentdata_query_records", {"limit": 500})
+    await mcp.call_tool("mspbotsagentdb_query_records", {"limit": 500})
 
     assert captured["path"] == "/agents/999/records:query"
     assert captured["body"]["limit"] == 100  # clamped from 500 to the 100 ceiling
@@ -137,10 +137,10 @@ async def test_query_records_clamps_limit_before_calling_api():
 
 @pytest.mark.asyncio
 async def test_no_credentials_returns_not_configured_without_calling_api():
-    from mspbots_agent_data_mcp.tools import stats
+    from mspbots_agent_db.tools import stats
 
     mcp = FastMCP(name="test")
     stats.register(mcp, lambda: None)
-    result = await mcp.call_tool("mspbotsagentdata_get_stats", {})
+    result = await mcp.call_tool("mspbotsagentdb_get_stats", {})
     text = result[0][0].text if isinstance(result, tuple) else str(result)
     assert "not_configured" in text

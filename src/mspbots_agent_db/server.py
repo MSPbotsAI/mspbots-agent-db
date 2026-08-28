@@ -87,18 +87,18 @@ def create_mcp_server(settings: Settings) -> FastMCP:
     # non-localhost Host headers with 421. Disable it so the server works
     # correctly behind a reverse proxy or docker network.
     mcp = FastMCP(
-        name="mspbots-agent-data-mcp",
+        name="mspbots-agent-db",
         instructions=(
             "MSPbots Agent Data Core (pg-data-ingest) is where an agent's business-log "
             "records live — one JSONB row per event, grouped by business_type, with no "
             "per-business-type table to design or migrate. This server exposes only the "
             "READ side, scoped to a single agent (the one the connector was configured "
             "for — there is no way to query a different agent's data through this "
-            "server). Typical flow: mspbotsagentdata_get_schemas first, to learn what "
+            "server). Typical flow: mspbotsagentdb_get_schemas first, to learn what "
             "business_types and fields exist for this agent; then "
-            "mspbotsagentdata_query_records with a filter built from those fields; then "
-            "mspbotsagentdata_get_record for one record's full detail. "
-            "mspbotsagentdata_get_stats reports storage/usage, not record content. "
+            "mspbotsagentdb_query_records with a filter built from those fields; then "
+            "mspbotsagentdb_get_record for one record's full detail. "
+            "mspbotsagentdb_get_stats reports storage/usage, not record content. "
             "Writing, deleting, and admin operations (upsert, delete, re-init, "
             "cross-agent listing) are intentionally not exposed here — an agent writes "
             "its own logs directly via the app's HTTP API, not through this MCP."

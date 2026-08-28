@@ -354,7 +354,7 @@ wheels = [
 ]
 
 [[package]]
-name = "mspbots-agent-data-mcp"
+name = "mspbots-agent-db"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [

@@ -12,12 +12,12 @@ from ._common import NO_TOKEN
 
 def register(mcp: FastMCP, client_factory: Callable[[], AgentDataClient | None]) -> None:
     @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
-    async def mspbotsagentdata_get_stats() -> str:
+    async def mspbotsagentdb_get_stats() -> str:
         """Check this agent's storage usage and business_type breakdown.
 
         Use for "how much data has this agent logged", "are we near the
         storage quota", "what record types does it have the most of" —
-        volume/usage, not content (use mspbotsagentdata_query_records for
+        volume/usage, not content (use mspbotsagentdb_query_records for
         that). estimated_rows = -1 means "never analyzed", not "empty".
         business_types (top 50 by count) is an unbounded full-partition
         scan — avoid calling this in a tight loop on a large agent.

@@ -26,8 +26,8 @@ RUN uv sync --frozen --no-dev
 FROM python:3.12-slim AS production
 
 # Create non-root user for security
-RUN groupadd -g 1001 mspagentdata && \
-    useradd -u 1001 -g mspagentdata -s /bin/sh -m mspagentdata
+RUN groupadd -g 1001 mspagentdb && \
+    useradd -u 1001 -g mspagentdb -s /bin/sh -m mspagentdb
 
 # Install curl for health checks
 RUN apt-get update && apt-get install -y --no-install-recommends curl \
@@ -36,26 +36,26 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl \
 WORKDIR /app
 
 # Copy virtual environment and source from builder
-COPY --from=builder --chown=mspagentdata:mspagentdata /app/.venv /app/.venv
-COPY --from=builder --chown=mspagentdata:mspagentdata /app/src /app/src
+COPY --from=builder --chown=mspagentdb:mspagentdb /app/.venv /app/.venv
+COPY --from=builder --chown=mspagentdb:mspagentdb /app/src /app/src
 
-# Put venv on PATH so `python -m mspbots_agent_data_mcp` resolves correctly
+# Put venv on PATH so `python -m mspbots_agent_db` resolves correctly
 ENV PATH="/app/.venv/bin:$PATH"
 
 ENV MCP_HTTP_PORT=8080
 ENV MCP_HTTP_HOST=0.0.0.0
 
-USER mspagentdata
+USER mspagentdb
 
 EXPOSE 8080
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
   CMD curl -fsS http://localhost:8080/health || exit 1
 
-CMD ["python", "-m", "mspbots_agent_data_mcp"]
+CMD ["python", "-m", "mspbots_agent_db"]
 
 # OCI image labels
-LABEL org.opencontainers.image.title="mspbots-agent-data-mcp"
+LABEL org.opencontainers.image.title="mspbots-agent-db"
 LABEL org.opencontainers.image.description="MCP server for the MSPbots Agent Data Core (pg-data-ingest) read API"
 LABEL org.opencontainers.image.version="${VERSION}"
 LABEL org.opencontainers.image.created="${BUILD_DATE}"
