@@ -73,25 +73,30 @@ class AgentDataError(Exception):
         return error_envelope(code, self.message, retryable)
 
 
+def agent_path(agent_id: str, suffix: str = "") -> str:
+    """Build a path under the given agent, e.g. agent_path("42", "/stats").
+
+    agent_id is the data-isolation key by design (one LIST partition per
+    agent) — it is not a credential. Authorization is the API key alone;
+    any valid key can address any agent_id (a known, documented gap of the
+    underlying app — see README Known Gaps), so tool callers are trusted
+    to pass their own agent_id, same as every other mspbotsagent*-family
+    tool in this platform takes agent_id as a plain argument.
+    """
+    return f"/agents/{agent_id}{suffix}"
+
+
 class AgentDataClient:
     """Async httpx client wrapping the MSPbots Agent Data Core (pg-data-ingest)
-    read API for a single, fixed agent.
+    read API.
 
     Reuses the module-level connection pool (see _get_http_client) across
     every call made through this instance, rather than opening a new
     connection per request.
-
-    agent_id is bound at construction time and is NOT settable per-call —
-    every path this client builds is scoped under /agents/{agent_id}/...,
-    and there is deliberately no way to target a different agent from here.
-    This is the fix for the API's own documented gap ("API key之间没有隔离
-    ——任何有效key都能读写任意agent的数据"): the gateway hands each connector
-    instance one agent_id, and this client only ever knows that one.
     """
 
-    def __init__(self, api_key: str, host: str, agent_id: str):
+    def __init__(self, api_key: str, host: str):
         self._api_key = api_key
-        self._agent_id = agent_id
         self._base_url = host.rstrip("/") + _APP_PREFIX
 
     def _headers(self) -> dict[str, str]:
@@ -105,10 +110,6 @@ class AgentDataClient:
         if not params:
             return {}
         return {k: v for k, v in params.items() if v is not None}
-
-    def agent_path(self, suffix: str = "") -> str:
-        """Build a path under this client's fixed agent, e.g. agent_path("/stats")."""
-        return f"/agents/{self._agent_id}{suffix}"
 
     async def get(self, path: str, params: dict | None = None) -> Any:
         return await self._request("GET", path, params=params)

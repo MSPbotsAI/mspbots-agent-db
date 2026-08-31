@@ -1,4 +1,4 @@
-"""Data-dictionary tools — read only, one fixed agent.
+"""Data-dictionary tools — read only.
 
 The underlying app auto-registers a JSON Schema the first time any given
 (business_type, schema_version) is written, so this dictionary needs no
@@ -13,13 +13,14 @@ from mcp.types import ToolAnnotations
 from pydantic import Field
 
 from .._json import dump_json_capped
-from ..api_client import AgentDataClient, AgentDataError
+from ..api_client import AgentDataClient, AgentDataError, agent_path
 from ._common import NO_TOKEN
 
 
 def register(mcp: FastMCP, client_factory: Callable[[], AgentDataClient | None]) -> None:
     @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
     async def mspbotsagentdb_get_schemas(
+        agent_id: Annotated[str, Field(description="Which agent's data dictionary to read.")],
         business_type: Annotated[
             str | None,
             Field(
@@ -45,7 +46,7 @@ def register(mcp: FastMCP, client_factory: Callable[[], AgentDataClient | None])
             return NO_TOKEN
         try:
             result = await client.get(
-                client.agent_path("/schemas"), params={"business_type": business_type}
+                agent_path(agent_id, "/schemas"), params={"business_type": business_type}
             )
             return dump_json_capped(result)
         except AgentDataError as e:

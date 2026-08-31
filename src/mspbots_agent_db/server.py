@@ -13,10 +13,11 @@ from .config import Settings
 # Per-request credential isolation via contextvars.
 # GatewayTokenMiddleware sets this before the MCP handler runs.
 # Python asyncio copies context per task, so concurrent SSE connections are isolated.
-# Value is (api_key, host, agent_id). agent_id is fixed per connector instance —
-# see AgentDataClient's docstring for why this is the security boundary, not
-# a tool argument.
-_gateway_creds_var: contextvars.ContextVar[tuple[str, str, str] | None] = contextvars.ContextVar(
+# Value is (api_key, host). agent_id is NOT a credential here — it's a plain
+# tool argument (see api_client.agent_path's docstring): the underlying app's
+# own auth is the API key alone, and any valid key can address any agent_id
+# (a known gap of the underlying app, not something this server papers over).
+_gateway_creds_var: contextvars.ContextVar[tuple[str, str] | None] = contextvars.ContextVar(
     "mspbots_agent_data_gateway_creds", default=None
 )
 
@@ -26,16 +27,16 @@ def get_client_from_context(settings: Settings) -> AgentDataClient | None:
     creds = _gateway_creds_var.get()
     if not creds:
         return None
-    api_key, host, agent_id = creds
-    return AgentDataClient(api_key, host, agent_id)
+    api_key, host = creds
+    return AgentDataClient(api_key, host)
 
 
 class GatewayTokenMiddleware:
     """ASGI middleware.
 
-    Reads X-MSP-Host, X-MSP-Api-Key, and X-MSP-Agent-Id (all required) from
-    request headers and stores them in the contextvar. Returns 401 if any is
-    missing on /mcp requests.
+    Reads X-MSP-Host and X-MSP-Api-Key (both required) from request headers
+    and stores them in the contextvar. Returns 401 if either is missing on
+    /mcp requests.
     """
 
     def __init__(self, app: ASGIApp, settings: Settings):
@@ -54,19 +55,16 @@ class GatewayTokenMiddleware:
 
         request = Request(scope)
         api_key = request.headers.get("x-msp-api-key")
-        agent_id = request.headers.get("x-msp-agent-id")
         host = request.headers.get("x-msp-host")
-        if not api_key or not agent_id or not host:
+        if not api_key or not host:
             response = JSONResponse(
                 {
                     "error": "Missing credentials",
                     "message": (
                         "This server requires the X-MSP-Api-Key header (Agent Data Core "
-                        "API key), the X-MSP-Agent-Id header (which agent's data this "
-                        "connection may access), and the X-MSP-Host header (Agent Data "
-                        "Core API host)"
+                        "API key) and the X-MSP-Host header (Agent Data Core API host)"
                     ),
-                    "required_headers": ["X-MSP-Api-Key", "X-MSP-Agent-Id", "X-MSP-Host"],
+                    "required_headers": ["X-MSP-Api-Key", "X-MSP-Host"],
                     "optional_headers": [],
                 },
                 status_code=401,
@@ -74,7 +72,7 @@ class GatewayTokenMiddleware:
             await response(scope, receive, send)
             return
 
-        ctx_token = _gateway_creds_var.set((api_key, host, agent_id))
+        ctx_token = _gateway_creds_var.set((api_key, host))
         try:
             await self.app(scope, receive, send)
         finally:
@@ -91,11 +89,10 @@ def create_mcp_server(settings: Settings) -> FastMCP:
         instructions=(
             "MSPbots Agent Data Core (pg-data-ingest) is where an agent's business-log "
             "records live — one JSONB row per event, grouped by business_type, with no "
-            "per-business-type table to design or migrate. This server exposes only the "
-            "READ side, scoped to a single agent (the one the connector was configured "
-            "for — there is no way to query a different agent's data through this "
-            "server). Typical flow: mspbotsagentdb_get_schemas first, to learn what "
-            "business_types and fields exist for this agent; then "
+            "per-business-type table to design or migrate. Every tool takes an agent_id "
+            "(one PostgreSQL partition per agent) — this server exposes only the READ "
+            "side. Typical flow: mspbotsagentdb_get_schemas first, to learn what "
+            "business_types and fields exist for that agent; then "
             "mspbotsagentdb_query_records with a filter built from those fields; then "
             "mspbotsagentdb_get_record for one record's full detail. "
             "mspbotsagentdb_get_stats reports storage/usage, not record content. "

@@ -1,8 +1,8 @@
-"""Record read tools — filtered query + single-record lookup, one fixed agent.
+"""Record read tools — filtered query + single-record lookup.
 
-⚠️ UNVERIFIED — built entirely from the API contract in the PRD-17749
-HANDOVER-MCP.md handover doc, not by calling a live deployment. Endpoint
-paths/params/response shapes below match that doc; see README Known Gaps.
+Endpoint paths/params/response shapes were checked against a real
+`pg-data-ingest` INT deployment (not just the handover doc) — see README
+Known Gaps for exactly what was and wasn't exercised live.
 """
 
 from collections.abc import Callable
@@ -13,7 +13,7 @@ from mcp.types import ToolAnnotations
 from pydantic import Field
 
 from .._json import dump_json_capped
-from ..api_client import AgentDataClient, AgentDataError
+from ..api_client import AgentDataClient, AgentDataError, agent_path
 from ._common import NO_TOKEN
 
 # Hard safety ceiling on top of the underlying API's own documented cap
@@ -24,6 +24,7 @@ _MAX_LIMIT = 100
 def register(mcp: FastMCP, client_factory: Callable[[], AgentDataClient | None]) -> None:
     @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
     async def mspbotsagentdb_query_records(
+        agent_id: Annotated[str, Field(description="Which agent's records to search.")],
         filters: Annotated[
             list[dict] | None,
             Field(
@@ -89,13 +90,14 @@ def register(mcp: FastMCP, client_factory: Callable[[], AgentDataClient | None])
         if cursor is not None:
             body["cursor"] = cursor
         try:
-            result = await client.post(client.agent_path("/records:query"), json_body=body)
+            result = await client.post(agent_path(agent_id, "/records:query"), json_body=body)
             return dump_json_capped(result)
         except AgentDataError as e:
             return e.to_envelope()
 
     @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
     async def mspbotsagentdb_get_record(
+        agent_id: Annotated[str, Field(description="Which agent owns this record.")],
         record_id: Annotated[str, Field(description="Required record ID.")],
     ) -> str:
         """Get one record's full detail by its exact record_id.
@@ -111,7 +113,7 @@ def register(mcp: FastMCP, client_factory: Callable[[], AgentDataClient | None])
         if client is None:
             return NO_TOKEN
         try:
-            result = await client.get(client.agent_path(f"/records/{record_id}"))
+            result = await client.get(agent_path(agent_id, f"/records/{record_id}"))
             return dump_json_capped(result)
         except AgentDataError as e:
             return e.to_envelope()

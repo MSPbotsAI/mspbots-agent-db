@@ -4,7 +4,8 @@ MCP server for the **MSPbots Agent Data Core** (`pg-data-ingest`) — a per-tena
 service where every agent's business-log records live in a single JSONB table,
 partitioned by agent, with no per-business-type table to design or migrate. This
 server exposes only the **read** side (schema discovery, filtered query, single-record
-lookup, usage stats) for **one fixed agent**.
+lookup, usage stats); every tool takes an `agent_id` to say which agent's partition
+to read.
 
 It follows the same design as the sibling `mspbots-agent-mcp` service: stateless, no
 stored credentials, per-request header authentication over the
@@ -13,8 +14,8 @@ transport).
 
 ## When would you use this
 
-This lets an agent (or a builder debugging one) look at the business data that
-agent has already logged — never another agent's, and never write/delete it:
+This lets an agent (or a builder debugging one) look at the business data an
+agent has already logged — never write/delete it:
 
 - "What kinds of records has this agent logged, and what fields do they have?" →
   `mspbotsagentdb_get_schemas`
@@ -27,21 +28,19 @@ agent has already logged — never another agent's, and never write/delete it:
 Writing new records, deleting them, and admin operations (`init`, `DELETE
 /agents/:id`, `POST /maintenance/run`, listing every agent) are **intentionally
 not exposed** — an agent writes its own logs directly via the app's HTTP API
-(`X-API-Key`), not through this MCP. See "Known Gaps" below for why this MCP
-doesn't take an `agent_id` argument either.
+(`X-API-Key`), not through this MCP.
 
 ## Tools
 
-所有工具的凭证均来自请求头（`X-MSP-Api-Key` / `X-MSP-Agent-Id` / `X-MSP-Host`），
-工具参数里既不需要传 API key，也**不需要、不能**传 `agent_id`——每个连接器实例
-在网关侧就已经绑死了唯一一个 agent，见下方 Known Gaps。
+授权只需要 `X-MSP-Api-Key` / `X-MSP-Host` 两个请求头；`agent_id` 是**普通工具参数**，
+由调用方在每次工具调用里显式传入——见下方 Known Gaps 关于这个设计取舍的说明。
 
 | Tool | 功能 | 参数 |
 |---|---|---|
-| `mspbotsagentdb_get_schemas` | 列出该 agent 已登记的数据字典（business_type/schema_version/json_schema/source） | `business_type`(可选，按业务类型过滤) |
-| `mspbotsagentdb_query_records` | 受限 Filter DSL 条件查询 + keyset 游标分页，主力读接口 | `filters`(可选，≤10个，AND 关系)、`limit`(默认 20，上限 100)、`cursor`(可选，翻页用) |
-| `mspbotsagentdb_get_record` | 按 record_id 读单条记录详情 | `record_id`(必填) |
-| `mspbotsagentdb_get_stats` | 该 agent 的存储用量与业务分布统计 | 无 |
+| `mspbotsagentdb_get_schemas` | 列出该 agent 已登记的数据字典（business_type/schema_version/json_schema/source） | `agent_id`(必填)、`business_type`(可选，按业务类型过滤) |
+| `mspbotsagentdb_query_records` | 受限 Filter DSL 条件查询 + keyset 游标分页，主力读接口 | `agent_id`(必填)、`filters`(可选，≤10个，AND 关系)、`limit`(默认 20，上限 100)、`cursor`(可选，翻页用) |
+| `mspbotsagentdb_get_record` | 按 record_id 读单条记录详情 | `agent_id`(必填)、`record_id`(必填) |
+| `mspbotsagentdb_get_stats` | 该 agent 的存储用量与业务分布统计 | `agent_id`(必填) |
 
 `filters[]` 每项 `{ field, op, value }`：
 
@@ -52,8 +51,7 @@ doesn't take an `agent_id` argument either.
 
 > Backing endpoints: `GET /agents/:agentId/schemas`,
 > `POST /agents/:agentId/records:query`, `GET /agents/:agentId/records/:recordId`,
-> `GET /agents/:agentId/stats`。`agentId` 由本服务从 `X-MSP-Agent-Id` header 注入，
-> 从不出现在 MCP 工具的入参 schema 里。
+> `GET /agents/:agentId/stats`。`agentId` 直接来自工具的 `agent_id` 参数。
 
 ## Quick Start
 
@@ -89,10 +87,10 @@ MCP caller/gateway):
 | Header | 类型 | 是否必填 | 字段描述 | Example |
 |---|---|---|---|---|
 | `X-MSP-Api-Key` | string | 必填 | Agent Data Core 的租户 API key。本服务原样转发为下游请求的 `X-API-Key: <key>`。 | `X-MSP-Api-Key: <api-key>` |
-| `X-MSP-Agent-Id` | string | 必填 | 本连接实例唯一绑定的 agent id。**不接受、也不透传给调用方选择**——所有工具调用都只作用于这一个 agent。 | `X-MSP-Agent-Id: 123` |
 | `X-MSP-Host` | string | 必填 | Agent Data Core API 所在的 host。 | `X-MSP-Host: https://agentint.mspbots.ai` |
 
-Missing any of the three headers returns `401 Unauthorized`.
+Missing either header returns `401 Unauthorized`. `agent_id` is **not** a header — it's
+a required argument on every tool call (see Known Gaps for why).
 
 ## Environment Variables
 
@@ -109,7 +107,7 @@ POST http://localhost:8080/mcp
 
 Connect your MCP client with:
 - Transport: `http` (Streamable HTTP / SSE)
-- Headers: `X-MSP-Api-Key`, `X-MSP-Agent-Id`, `X-MSP-Host` (all required)
+- Headers: `X-MSP-Api-Key`, `X-MSP-Host` (both required)
 
 ## 测试示例 (Test Example)
 
@@ -118,38 +116,45 @@ curl -X POST http://localhost:8080/mcp \
   -H "Content-Type: application/json" \
   -H "Accept: application/json, text/event-stream" \
   -H "X-MSP-Api-Key: <api-key>" \
-  -H "X-MSP-Agent-Id: 123" \
   -H "X-MSP-Host: https://agentint.mspbots.ai" \
   -d '{
     "jsonrpc": "2.0",
     "id": 1,
     "method": "tools/call",
-    "params": { "name": "mspbotsagentdb_get_schemas", "arguments": {} }
+    "params": { "name": "mspbotsagentdb_get_schemas", "arguments": { "agent_id": "123" } }
   }'
 ```
 
-> ⚠️ 本仓库为公开仓库，请勿在任何提交的文件中写入真实的 API key / agent id 等敏感信息，
+> ⚠️ 本仓库为公开仓库，请勿在任何提交的文件中写入真实的 API key 等敏感信息，
 > 上面的 `<api-key>` 仅为占位符。
 
 ## Known Gaps
 
-- ⚠️ **UNVERIFIED — built entirely from the PRD-17749 `HANDOVER-MCP.md` handover
-  doc, not by calling a live deployment.** Endpoint paths/params/response shapes
-  match that doc; none have been called against a real `pg-data-ingest` instance.
-  Verify against a live INT deployment before treating this as production-ready.
-- **Why `agent_id` is not a tool parameter, on purpose.** The handover doc's own
-  §5 known-gap list states: "API key之间没有隔离——任何有效key都能读写任意agent
-  的数据……MCP如果对LLM暴露查询，这条必须先解决" — i.e. the underlying app has
-  no per-agent credential scoping yet, so a naive MCP that took `agent_id` as a
-  free argument would let any agent's LLM read any other agent's data in the
-  same tenant just by naming a different id. This server closes that gap at the
-  MCP layer instead of waiting on an app-side fix: `agent_id` is bound once, at
-  connector-configuration time, via the `X-MSP-Agent-Id` header — no tool
-  accepts or forwards a caller-supplied agent id. **This requires the platform
-  to push this connector's credentials per-agent, not per-tenant** (unlike
-  `mspbots-agent-mcp`/`mspbots-fleet-mcp`, which are registered once per tenant
-  and take `agent_id` as a free parameter because their own APIs already
-  enforce tenant-scoped, not agent-scoped, access).
+- **Verified against a live INT deployment** (`https://agentint.mspbots.ai/apps/pg-data-ingest`)
+  on 2026-08-31: `/health`, `POST /agents/:id/init`, `PUT .../records/:id`, `GET
+  .../records/:id`, `POST .../records:query`, and `GET /agents/:id/schemas` were
+  all called for real with a real tenant API key, and every response shape
+  matched what this server's tools parse. Not yet verified: the full `filters[]`
+  operator matrix (only a single `eq` filter has been tried) and error paths
+  other than 401/404 (`409 AGENT_DELETING`, `413`, `429`, `500` are still only
+  unit-tested against synthetic responses, not a live trigger).
+- **`agent_id` is a plain tool argument, not bound to the connection — by
+  deliberate choice, not an oversight.** The handover doc's own §5 known-gap
+  list states: "API key之间没有隔离——任何有效key都能读写任意agent的数据……
+  MCP如果对LLM暴露查询，这条必须先解决" — i.e. the underlying app's API key
+  has no per-agent scoping, so any tool call here that names a different
+  `agent_id` than "the caller's own" will succeed and return that other
+  agent's data. An earlier draft of this server closed that gap at the MCP
+  layer (binding one `agent_id` per connector instance via a header, no
+  tool argument at all); this was deliberately reverted per explicit product
+  direction: `agent_id` is the app's own data-isolation key by design (one
+  partition per agent, matching how `mspbots-agent-mcp`/`mspbots-fleet-mcp`
+  already take `agent_id` as a free parameter for the same reason), and
+  authorization is scoped to the API key alone. **Net effect: this server
+  inherits the underlying app's own documented isolation gap unmitigated** —
+  closing it (e.g. binding a key to one agent_id server-side, per the
+  handover doc's suggested `API_KEYS=name:key:agentId` fix) is on the
+  `pg-data-ingest` app, not this MCP.
 - **`business_type`/`record_id` server-side validation is not duplicated
   client-side.** The API already rejects malformed values with a structured
   `400 INVALID_ARGUMENT` (surfaced here as a normal error envelope), so this

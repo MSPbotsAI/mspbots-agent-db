@@ -10,16 +10,16 @@ import json
 import pytest
 from mcp.server.fastmcp import FastMCP
 
-from mspbots_agent_db.api_client import AgentDataClient, AgentDataError
+from mspbots_agent_db.api_client import AgentDataError, agent_path
 from mspbots_agent_db.config import Settings
 from mspbots_agent_db.server import create_mcp_server
 
 # name -> (required params, expected annotation hint set to True)
 EXPECTED_TOOLS = {
-    "mspbotsagentdb_get_schemas": (set(), {"readOnlyHint"}),
-    "mspbotsagentdb_query_records": (set(), {"readOnlyHint"}),
-    "mspbotsagentdb_get_record": ({"record_id"}, {"readOnlyHint"}),
-    "mspbotsagentdb_get_stats": (set(), {"readOnlyHint"}),
+    "mspbotsagentdb_get_schemas": ({"agent_id"}, {"readOnlyHint"}),
+    "mspbotsagentdb_query_records": ({"agent_id"}, {"readOnlyHint"}),
+    "mspbotsagentdb_get_record": ({"agent_id", "record_id"}, {"readOnlyHint"}),
+    "mspbotsagentdb_get_stats": ({"agent_id"}, {"readOnlyHint"}),
 }
 
 # This tool's description exceeds the SOP's 500-char guideline (§2.2, a
@@ -45,14 +45,14 @@ async def test_tools_list_snapshot():
         required = set(tool.inputSchema.get("required", []))
         assert required == expected_required, f"{name}: required={required}"
 
-        # Security-critical regression guard: agent_id must NEVER be a tool
-        # argument. It is bound once per connector instance (X-MSP-Agent-Id,
-        # see server.py), which is the whole fix for the underlying API's
-        # documented gap that any valid API key can read any agent's data.
-        # If a future edit adds agent_id as a parameter here, that gap
-        # reopens at the MCP layer even though the app itself never changed.
+        # agent_id is a required argument on every tool by design — it is the
+        # underlying app's own data-isolation key (one partition per agent),
+        # not a credential. Authorization is the API key alone (X-MSP-Api-Key
+        # + X-MSP-Host); any valid key can address any agent_id, matching how
+        # every other mspbotsagent*-family tool in this platform takes
+        # agent_id as a plain argument. See README Known Gaps.
         properties = tool.inputSchema.get("properties", {})
-        assert "agent_id" not in properties, f"{name}: agent_id must not be a tool argument"
+        assert "agent_id" in properties, f"{name}: agent_id must be a tool argument"
 
         description = tool.description or ""
         if name not in _LONG_DESCRIPTION_EXCEPTIONS:
@@ -105,11 +105,13 @@ def test_error_envelope_mapping(status_code, expected_code, expected_retryable):
     assert envelope["error"]["message"] == "boom"
 
 
-def test_agent_data_client_paths_are_scoped_to_its_bound_agent():
-    client = AgentDataClient(api_key="k", host="https://agentint.mspbots.ai", agent_id="789")
-    assert client.agent_path() == "/agents/789"
-    assert client.agent_path("/stats") == "/agents/789/stats"
-    assert client.agent_path("/records/T-1") == "/agents/789/records/T-1"
+def test_agent_path_builds_paths_for_the_given_agent():
+    assert agent_path("789") == "/agents/789"
+    assert agent_path("789", "/stats") == "/agents/789/stats"
+    assert agent_path("789", "/records/T-1") == "/agents/789/records/T-1"
+    # Different agent_id -> different path, proving it's a real per-call
+    # argument, not baked into the client instance.
+    assert agent_path("1", "/stats") == "/agents/1/stats"
 
 
 @pytest.mark.asyncio
@@ -117,9 +119,6 @@ async def test_query_records_clamps_limit_before_calling_api():
     captured = {}
 
     class _StubClient:
-        def agent_path(self, suffix: str = "") -> str:
-            return f"/agents/999{suffix}"
-
         async def post(self, path, json_body=None):
             captured["path"] = path
             captured["body"] = json_body
@@ -129,7 +128,7 @@ async def test_query_records_clamps_limit_before_calling_api():
 
     mcp = FastMCP(name="test")
     records.register(mcp, lambda: _StubClient())
-    await mcp.call_tool("mspbotsagentdb_query_records", {"limit": 500})
+    await mcp.call_tool("mspbotsagentdb_query_records", {"agent_id": "999", "limit": 500})
 
     assert captured["path"] == "/agents/999/records:query"
     assert captured["body"]["limit"] == 100  # clamped from 500 to the 100 ceiling
@@ -141,6 +140,6 @@ async def test_no_credentials_returns_not_configured_without_calling_api():
 
     mcp = FastMCP(name="test")
     stats.register(mcp, lambda: None)
-    result = await mcp.call_tool("mspbotsagentdb_get_stats", {})
+    result = await mcp.call_tool("mspbotsagentdb_get_stats", {"agent_id": "1"})
     text = result[0][0].text if isinstance(result, tuple) else str(result)
     assert "not_configured" in text

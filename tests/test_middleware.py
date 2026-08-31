@@ -34,7 +34,7 @@ def test_missing_header_returns_401_with_required_headers_listed():
         )
         assert resp.status_code == 401
         body = resp.json()
-        assert body["required_headers"] == ["X-MSP-Api-Key", "X-MSP-Agent-Id", "X-MSP-Host"]
+        assert body["required_headers"] == ["X-MSP-Api-Key", "X-MSP-Host"]
 
 
 def test_missing_single_header_still_returns_401():
@@ -46,7 +46,6 @@ def test_missing_single_header_still_returns_401():
             headers={
                 "Accept": "application/json, text/event-stream",
                 "X-MSP-Api-Key": "dummy-key",
-                "X-MSP-Agent-Id": "123",
                 # X-MSP-Host intentionally omitted
             },
         )
@@ -78,7 +77,6 @@ def test_header_present_reaches_request_context(monkeypatch):
             "path": "/mcp",
             "headers": [
                 (b"x-msp-api-key", b"test-key-123"),
-                (b"x-msp-agent-id", b"456"),
                 (b"x-msp-host", b"https://agentint.mspbots.ai"),
             ],
         }
@@ -94,7 +92,7 @@ def test_header_present_reaches_request_context(monkeypatch):
         await middleware(scope, receive, send)
 
     asyncio.run(run())
-    assert seen["creds"] == ("test-key-123", "https://agentint.mspbots.ai", "456")
+    assert seen["creds"] == ("test-key-123", "https://agentint.mspbots.ai")
     # After the request completes, the contextvar must be reset — a fresh
     # get() outside any request context sees no leftover credential.
     assert _gateway_creds_var.get() is None
