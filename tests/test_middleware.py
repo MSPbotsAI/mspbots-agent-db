@@ -34,7 +34,7 @@ def test_missing_header_returns_401_with_required_headers_listed():
         )
         assert resp.status_code == 401
         body = resp.json()
-        assert body["required_headers"] == ["X-MSP-Api-Key", "X-MSP-Host", "X-MSP-Tenant-Id"]
+        assert body["required_headers"] == ["X-MSP-Token", "X-MSP-Host", "X-MSP-Tenant-Id"]
 
 
 def test_missing_single_header_still_returns_401():
@@ -45,7 +45,7 @@ def test_missing_single_header_still_returns_401():
             json={"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}},
             headers={
                 "Accept": "application/json, text/event-stream",
-                "X-MSP-Api-Key": "dummy-key",
+                "X-MSP-Token": "dummy-key",
                 "X-MSP-Tenant-Id": "tenant-1",
                 # X-MSP-Host intentionally omitted
             },
@@ -77,7 +77,7 @@ def test_header_present_reaches_request_context(monkeypatch):
             "type": "http",
             "path": "/mcp",
             "headers": [
-                (b"x-msp-api-key", b"test-key-123"),
+                (b"x-msp-token", b"test-key-123"),
                 (b"x-msp-host", b"https://agentint.mspbots.ai"),
                 (b"x-msp-tenant-id", b"tenant-abc"),
             ],

@@ -13,14 +13,15 @@ from .config import Settings
 # Per-request credential isolation via contextvars.
 # GatewayTokenMiddleware sets this before the MCP handler runs.
 # Python asyncio copies context per task, so concurrent SSE connections are isolated.
-# Value is (api_key, host, tenant_id). agent_id is NOT a credential here —
+# Value is (token, host, tenant_id). agent_id is NOT a credential here —
 # it's a plain tool argument (see api_client.agent_path's docstring): the
-# underlying app's own auth is the API key alone, and any valid key can
-# address any agent_id (a known gap of the underlying app, not something
-# this server papers over). tenant_id IS required, but for a different
-# reason: it's not app-level auth either, it's what the shared APISIX
-# gateway needs to route to the right tenant's pod (pg-data-ingest is one
-# pod per tenant) — see AgentDataClient's docstring for how this was found.
+# underlying app's own auth only answers "is this token valid", never
+# "which agent may it touch", so any valid token can address any agent_id
+# (a known gap of the underlying app, not something this server papers
+# over). tenant_id IS required, but for a different reason: it's not
+# app-level auth either, it's what the shared APISIX gateway needs to
+# route to the right tenant's pod (pg-data-ingest is one pod per tenant) —
+# see AgentDataClient's docstring for how this was found.
 _gateway_creds_var: contextvars.ContextVar[tuple[str, str, str] | None] = contextvars.ContextVar(
     "mspbots_agent_data_gateway_creds", default=None
 )
@@ -31,16 +32,22 @@ def get_client_from_context(settings: Settings) -> AgentDataClient | None:
     creds = _gateway_creds_var.get()
     if not creds:
         return None
-    api_key, host, tenant_id = creds
-    return AgentDataClient(api_key, host, tenant_id)
+    token, host, tenant_id = creds
+    return AgentDataClient(token, host, tenant_id)
 
 
 class GatewayTokenMiddleware:
     """ASGI middleware.
 
-    Reads X-MSP-Host, X-MSP-Api-Key, and X-MSP-Tenant-Id (all required) from
+    Reads X-MSP-Host, X-MSP-Token, and X-MSP-Tenant-Id (all required) from
     request headers and stores them in the contextvar. Returns 401 if any is
     missing on /mcp requests.
+
+    X-MSP-Token carries the platform's own EdDSA JWT, forwarded verbatim as
+    Authorization: Bearer <token> — same convention as the sibling
+    mspbots-agent-mcp/mspbots-fleet-mcp connectors, and the only credential
+    pg-data-ingest's own upcoming release still accepts (see
+    AgentDataClient's docstring).
     """
 
     def __init__(self, app: ASGIApp, settings: Settings):
@@ -58,20 +65,20 @@ class GatewayTokenMiddleware:
             return
 
         request = Request(scope)
-        api_key = request.headers.get("x-msp-api-key")
+        token = request.headers.get("x-msp-token")
         host = request.headers.get("x-msp-host")
         tenant_id = request.headers.get("x-msp-tenant-id")
-        if not api_key or not host or not tenant_id:
+        if not token or not host or not tenant_id:
             response = JSONResponse(
                 {
                     "error": "Missing credentials",
                     "message": (
-                        "This server requires the X-MSP-Api-Key header (Agent Data Core "
-                        "API key), the X-MSP-Host header (Agent Data Core API host), and "
-                        "the X-MSP-Tenant-Id header (needed for the shared gateway to "
+                        "This server requires the X-MSP-Token header (Agent Data Core "
+                        "platform JWT), the X-MSP-Host header (Agent Data Core API host), "
+                        "and the X-MSP-Tenant-Id header (needed for the shared gateway to "
                         "route to the right tenant's pod, not for app-level auth)"
                     ),
-                    "required_headers": ["X-MSP-Api-Key", "X-MSP-Host", "X-MSP-Tenant-Id"],
+                    "required_headers": ["X-MSP-Token", "X-MSP-Host", "X-MSP-Tenant-Id"],
                     "optional_headers": [],
                 },
                 status_code=401,
@@ -79,7 +86,7 @@ class GatewayTokenMiddleware:
             await response(scope, receive, send)
             return
 
-        ctx_token = _gateway_creds_var.set((api_key, host, tenant_id))
+        ctx_token = _gateway_creds_var.set((token, host, tenant_id))
         try:
             await self.app(scope, receive, send)
         finally:

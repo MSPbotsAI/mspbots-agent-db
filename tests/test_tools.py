@@ -47,10 +47,11 @@ async def test_tools_list_snapshot():
 
         # agent_id is a required argument on every tool by design — it is the
         # underlying app's own data-isolation key (one partition per agent),
-        # not a credential. Authorization is the API key alone (X-MSP-Api-Key
-        # + X-MSP-Host); any valid key can address any agent_id, matching how
-        # every other mspbotsagent*-family tool in this platform takes
-        # agent_id as a plain argument. See README Known Gaps.
+        # not a credential. Authorization is the platform JWT alone
+        # (X-MSP-Token + X-MSP-Host); any valid token can address any
+        # agent_id, matching how every other mspbotsagent*-family tool in
+        # this platform takes agent_id as a plain argument. See README
+        # Known Gaps.
         properties = tool.inputSchema.get("properties", {})
         assert "agent_id" in properties, f"{name}: agent_id must be a tool argument"
 

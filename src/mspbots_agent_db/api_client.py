@@ -77,11 +77,12 @@ def agent_path(agent_id: str, suffix: str = "") -> str:
     """Build a path under the given agent, e.g. agent_path("42", "/stats").
 
     agent_id is the data-isolation key by design (one LIST partition per
-    agent) — it is not a credential. Authorization is the API key alone;
-    any valid key can address any agent_id (a known, documented gap of the
-    underlying app — see README Known Gaps), so tool callers are trusted
-    to pass their own agent_id, same as every other mspbotsagent*-family
-    tool in this platform takes agent_id as a plain argument.
+    agent) — it is not a credential. Authorization only answers "is this
+    token valid", never "which agent may it touch" — any valid token can
+    address any agent_id (a known, documented gap of the underlying app —
+    see README Known Gaps), so tool callers are trusted to pass their own
+    agent_id, same as every other mspbotsagent*-family tool in this
+    platform takes agent_id as a plain argument.
     """
     return f"/agents/{agent_id}{suffix}"
 
@@ -94,26 +95,38 @@ class AgentDataClient:
     every call made through this instance, rather than opening a new
     connection per request.
 
-    X_Tenant_ID is required on every request even though the app's own auth
-    doc (§4.0) never mentions it: pg-data-ingest is deployed one pod per
-    tenant, and the shared APISIX gateway in front of every `/apps/*` app on
-    this host needs X_Tenant_ID to pick which tenant's pod to route to —
-    without it the gateway returns a generic {"error":"App not found"} 404
-    before the request ever reaches pg-data-ingest's own auth/routing at
-    all. Confirmed by direct testing: X-API-Key alone -> "App not found";
-    X-API-Key + X_Tenant_ID (as a plain header, no cookie needed) -> real
-    data. This is a routing-layer requirement, independent of X-API-Key vs.
-    platform-JWT auth.
+    Auth is the platform's own EdDSA JWT, forwarded verbatim as
+    `Authorization: Bearer <token>` — not an X-API-Key. This was a
+    deliberate choice, not the only option: the currently-live INT build
+    still also accepts X-API-Key (a separate credential type configured
+    per tenant), but pg-data-ingest's own upcoming release (@0.0.4, INT
+    branch, not yet deployed as of this writing — its own /health response
+    still includes `api_keys_configured`, the documented tell for old vs.
+    new) deletes the X-API-Key code path entirely and keeps only the JWT.
+    Standardizing on the JWT now means this client keeps working across
+    that upgrade with no further change, and it also matches the
+    convention every other mb-platform-* client in this fleet
+    (mspbots-agent-mcp, mspbots-fleet-mcp) already uses.
+
+    X_Tenant_ID is required on every request even though pg-data-ingest's
+    own auth docs never mention it: it's deployed one pod per tenant, and
+    the shared APISIX gateway in front of every `/apps/*` app on this host
+    needs X_Tenant_ID to pick which tenant's pod to route to — without it
+    the gateway returns a generic {"error":"App not found"} 404 before the
+    request ever reaches pg-data-ingest's own auth/routing at all.
+    Confirmed by direct testing: a token alone -> "App not found"; token +
+    X_Tenant_ID (as a plain header, no cookie needed) -> real data. This is
+    a routing-layer requirement, independent of which auth method is used.
     """
 
-    def __init__(self, api_key: str, host: str, tenant_id: str):
-        self._api_key = api_key
+    def __init__(self, token: str, host: str, tenant_id: str):
+        self._token = token
         self._tenant_id = tenant_id
         self._base_url = host.rstrip("/") + _APP_PREFIX
 
     def _headers(self) -> dict[str, str]:
         return {
-            "X-API-Key": self._api_key,
+            "Authorization": f"Bearer {self._token}",
             "X_Tenant_ID": self._tenant_id,
             "Content-Type": "application/json",
             "Accept": "application/json",
