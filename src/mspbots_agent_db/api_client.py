@@ -93,15 +93,28 @@ class AgentDataClient:
     Reuses the module-level connection pool (see _get_http_client) across
     every call made through this instance, rather than opening a new
     connection per request.
+
+    X_Tenant_ID is required on every request even though the app's own auth
+    doc (§4.0) never mentions it: pg-data-ingest is deployed one pod per
+    tenant, and the shared APISIX gateway in front of every `/apps/*` app on
+    this host needs X_Tenant_ID to pick which tenant's pod to route to —
+    without it the gateway returns a generic {"error":"App not found"} 404
+    before the request ever reaches pg-data-ingest's own auth/routing at
+    all. Confirmed by direct testing: X-API-Key alone -> "App not found";
+    X-API-Key + X_Tenant_ID (as a plain header, no cookie needed) -> real
+    data. This is a routing-layer requirement, independent of X-API-Key vs.
+    platform-JWT auth.
     """
 
-    def __init__(self, api_key: str, host: str):
+    def __init__(self, api_key: str, host: str, tenant_id: str):
         self._api_key = api_key
+        self._tenant_id = tenant_id
         self._base_url = host.rstrip("/") + _APP_PREFIX
 
     def _headers(self) -> dict[str, str]:
         return {
             "X-API-Key": self._api_key,
+            "X_Tenant_ID": self._tenant_id,
             "Content-Type": "application/json",
             "Accept": "application/json",
         }
