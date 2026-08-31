@@ -35,13 +35,15 @@ def register(mcp: FastMCP, client_factory: Callable[[], AgentDataClient | None])
                     "field is one of business_type | record_id | created_at | updated_at "
                     "| schema_version, OR a data.<key> path from "
                     "mspbotsagentdb_get_schemas (up to 5 dot-levels deep, e.g. "
-                    '"data.ticket.assignee.name") — any other field is rejected. '
+                    '"data.ticket.assignee.name") — any other field gets a 400 from the '
+                    "backend (not validated here). "
                     "op is one of eq | neq | gt | gte | lt | lte | in | contains | exists. "
                     "gt/gte/lt/lte do numeric or timestamp comparison; a row whose value "
                     "at that path isn't a number/timestamp simply doesn't match (no "
                     "error). in takes an array (≤50 items) for value. contains and "
                     "exists are data.<key>-only — using them on an entity field "
-                    "(business_type, record_id, ...) is rejected. exists doesn't need "
+                    "(business_type, record_id, ...) gets a 400 from the backend, not "
+                    "validated here. exists doesn't need "
                     "value, and a JSON-explicit null still counts as existing. "
                     'Example: [{"field": "business_type", "op": "eq", "value": '
                     '"ticket_sync"}, {"field": "data.status", "op": "eq", "value": '
