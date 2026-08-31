@@ -32,7 +32,7 @@ not exposed** — an agent writes its own logs directly via the app's HTTP API
 
 ## Tools
 
-授权只需要 `X-MSP-Api-Key` / `X-MSP-Host` 两个请求头；`agent_id` 是**普通工具参数**，
+授权需要 `X-MSP-Api-Key` / `X-MSP-Host` / `X-MSP-Tenant-Id` 三个请求头；`agent_id` 是**普通工具参数**，
 由调用方在每次工具调用里显式传入——见下方 Known Gaps 关于这个设计取舍的说明。
 
 | Tool | 功能 | 参数 |
@@ -88,9 +88,10 @@ MCP caller/gateway):
 |---|---|---|---|---|
 | `X-MSP-Api-Key` | string | 必填 | Agent Data Core 的租户 API key。本服务原样转发为下游请求的 `X-API-Key: <key>`。 | `X-MSP-Api-Key: <api-key>` |
 | `X-MSP-Host` | string | 必填 | Agent Data Core API 所在的 host。 | `X-MSP-Host: https://agentint.mspbots.ai` |
+| `X-MSP-Tenant-Id` | string | 必填 | **不是App级鉴权**，是共享网关（APISIX）用来决定转发到哪个租户pod的路由标识（pg-data-ingest一租户一pod）。本服务转发为下游请求的 `X_Tenant_ID` header。缺这个会在网关层直接被拦，返回一个跟pg-data-ingest无关的通用 `{"error":"App not found"}`，不会到达App自己的鉴权/业务逻辑——见 Known Gaps。 | `X-MSP-Tenant-Id: <tenant-uuid>` |
 
-Missing either header returns `401 Unauthorized`. `agent_id` is **not** a header — it's
-a required argument on every tool call (see Known Gaps for why).
+Missing any of the three headers returns `401 Unauthorized`. `agent_id` is **not** a
+header — it's a required argument on every tool call (see Known Gaps for why).
 
 ## Environment Variables
 
@@ -107,7 +108,7 @@ POST http://localhost:8080/mcp
 
 Connect your MCP client with:
 - Transport: `http` (Streamable HTTP / SSE)
-- Headers: `X-MSP-Api-Key`, `X-MSP-Host` (both required)
+- Headers: `X-MSP-Api-Key`, `X-MSP-Host`, `X-MSP-Tenant-Id` (all required)
 
 ## 测试示例 (Test Example)
 
@@ -117,6 +118,7 @@ curl -X POST http://localhost:8080/mcp \
   -H "Accept: application/json, text/event-stream" \
   -H "X-MSP-Api-Key: <api-key>" \
   -H "X-MSP-Host: https://agentint.mspbots.ai" \
+  -H "X-MSP-Tenant-Id: <tenant-uuid>" \
   -d '{
     "jsonrpc": "2.0",
     "id": 1,
@@ -130,14 +132,28 @@ curl -X POST http://localhost:8080/mcp \
 
 ## Known Gaps
 
+- **Fixed 2026-08-31: every tool call was failing in production** with
+  `{"code":"not_found","message":"unknown error"}` — a live agent hit this
+  calling `mspbotsagentdb_get_schemas`. Root cause: `X-MSP-Tenant-Id` was
+  missing entirely from this server's credential set. `pg-data-ingest` is one
+  pod per tenant, and the shared APISIX gateway in front of every `/apps/*`
+  app on the host needs a tenant id to route to the right pod — without it,
+  the gateway itself returns a generic `{"error":"App not found"}` 404 before
+  the request ever reaches `pg-data-ingest`'s own auth or business logic. This
+  is unrelated to X-API-Key vs. platform-JWT auth (confirmed both fail
+  identically without it, and both succeed identically with it) — isolated by
+  testing header/cookie combinations one at a time against a real endpoint.
+  Now fixed: `X-MSP-Tenant-Id` is a required header, forwarded as `X_Tenant_ID`.
 - **Verified against a live INT deployment** (`https://agentint.mspbots.ai/apps/pg-data-ingest`)
   on 2026-08-31: `/health`, `POST /agents/:id/init`, `PUT .../records/:id`, `GET
   .../records/:id`, `POST .../records:query`, and `GET /agents/:id/schemas` were
-  all called for real with a real tenant API key, and every response shape
-  matched what this server's tools parse. Not yet verified: the full `filters[]`
-  operator matrix (only a single `eq` filter has been tried) and error paths
-  other than 401/404 (`409 AGENT_DELETING`, `413`, `429`, `500` are still only
-  unit-tested against synthetic responses, not a live trigger).
+  all called for real with a real tenant API key, through this server's own
+  MCP `tools/call` protocol (not just bare HTTP) — a real fix, not a guess.
+  Every response shape matched what this server's tools parse. Not yet
+  verified: the full `filters[]` operator matrix (only a single `eq` filter
+  has been tried) and error paths other than 401/404 (`409 AGENT_DELETING`,
+  `413`, `429`, `500` are still only unit-tested against synthetic responses,
+  not a live trigger).
 - **`agent_id` is a plain tool argument, not bound to the connection — by
   deliberate choice, not an oversight.** The handover doc's own §5 known-gap
   list states: "API key之间没有隔离——任何有效key都能读写任意agent的数据……
