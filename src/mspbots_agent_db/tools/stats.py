@@ -17,14 +17,13 @@ def register(mcp: FastMCP, client_factory: Callable[[], AgentDataClient | None])
     async def mspbotsagentdb_get_stats(
         agent_id: Annotated[str, Field(description="Which agent's usage to check.")],
     ) -> str:
-        """Check an agent's storage usage and business_type breakdown.
+        """Check an agent's record count and business_type breakdown.
 
-        Use for "how much data has this agent logged", "are we near the
-        storage quota", "what record types does it have the most of" —
-        volume/usage, not content (use mspbotsagentdb_query_records for
-        that). estimated_rows = -1 means "never analyzed", not "empty".
-        business_types (top 50 by count) is an unbounded full-partition
-        scan — avoid calling this in a tight loop on a large agent.
+        For "how many records" / "what types has it logged most" — not
+        storage bytes: tenant_total_bytes/tenant_estimated_rows are for the
+        WHOLE TENANT, not this agent — never report those as this agent's
+        usage. estimated_rows=-1 means never analyzed. business_types
+        (top 50) is an unbounded full-partition scan — avoid tight loops.
         """
         client = client_factory()
         if client is None:

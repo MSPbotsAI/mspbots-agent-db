@@ -20,7 +20,21 @@ EXPECTED_TOOLS = {
     "mspbotsagentdb_query_records": ({"agent_id"}, {"readOnlyHint"}),
     "mspbotsagentdb_get_record": ({"agent_id", "record_id"}, {"readOnlyHint"}),
     "mspbotsagentdb_get_stats": ({"agent_id"}, {"readOnlyHint"}),
+    "mspbotsagentdb_list_agents": (set(), {"readOnlyHint"}),
+    "mspbotsagentdb_write_record": (
+        {"agent_id", "record_id", "business_type", "data"},
+        {"idempotentHint"},
+    ),
+    "mspbotsagentdb_write_records_batch": ({"agent_id", "records"}, {"idempotentHint"}),
+    "mspbotsagentdb_delete_record": (
+        {"agent_id", "record_id"},
+        {"destructiveHint", "idempotentHint"},
+    ),
 }
+
+# mspbotsagentdb_list_agents is tenant-scoped, not agent-scoped — it has no
+# agent_id argument at all (see EXPECTED_TOOLS above).
+_NO_AGENT_ID_TOOLS = {"mspbotsagentdb_list_agents"}
 
 # This tool's description exceeds the SOP's 500-char guideline (§2.2, a
 # "should" not a hard rule) because it has to spell out the real field
@@ -45,15 +59,22 @@ async def test_tools_list_snapshot():
         required = set(tool.inputSchema.get("required", []))
         assert required == expected_required, f"{name}: required={required}"
 
-        # agent_id is a required argument on every tool by design — it is the
-        # underlying app's own data-isolation key (one partition per agent),
-        # not a credential. Authorization is the platform JWT alone
-        # (X-MSP-Token + X-MSP-Host); any valid token can address any
-        # agent_id, matching how every other mspbotsagent*-family tool in
-        # this platform takes agent_id as a plain argument. See README
-        # Known Gaps.
+        # agent_id is a required argument on every agent-scoped tool by
+        # design — within a tenant, authorization is the platform JWT alone;
+        # any valid token can address any agent_id in its own tenant,
+        # matching how every other mspbotsagent*-family tool in this
+        # platform takes agent_id as a plain argument. See README Known
+        # Gaps. mspbotsagentdb_list_agents is the one exception — it lists
+        # every agent in the tenant, so it takes no agent_id at all.
         properties = tool.inputSchema.get("properties", {})
-        assert "agent_id" in properties, f"{name}: agent_id must be a tool argument"
+        if name not in _NO_AGENT_ID_TOOLS:
+            assert "agent_id" in properties, f"{name}: agent_id must be a tool argument"
+
+        # tenant_id must NEVER be an LLM-visible tool argument (MCP-API.md
+        # §1) — it's resolved server-side via AgentDataClient._resolve_tenant_id
+        # (a /whoami call), not supplied by the caller. If this ever fires,
+        # someone added tenant_id as a Field() on a tool by mistake.
+        assert "tenant_id" not in properties, f"{name}: tenant_id must never be a tool argument"
 
         description = tool.description or ""
         if name not in _LONG_DESCRIPTION_EXCEPTIONS:
@@ -144,3 +165,95 @@ async def test_no_credentials_returns_not_configured_without_calling_api():
     result = await mcp.call_tool("mspbotsagentdb_get_stats", {"agent_id": "1"})
     text = result[0][0].text if isinstance(result, tuple) else str(result)
     assert "not_configured" in text
+
+
+@pytest.mark.asyncio
+async def test_list_agents_calls_the_tenant_scoped_endpoint():
+    captured = {}
+
+    class _StubClient:
+        async def get(self, path, params=None):
+            captured["path"] = path
+            return {"agents": [{"agent_id": "1"}]}
+
+    from mspbots_agent_db.tools import agents
+
+    mcp = FastMCP(name="test")
+    agents.register(mcp, lambda: _StubClient())
+    await mcp.call_tool("mspbotsagentdb_list_agents", {})
+
+    assert captured["path"] == "/agents"
+
+
+@pytest.mark.asyncio
+async def test_write_record_puts_business_type_and_data():
+    captured = {}
+
+    class _StubClient:
+        async def put(self, path, json_body=None):
+            captured["path"] = path
+            captured["body"] = json_body
+            return {"inserted": True, "updated": False}
+
+    from mspbots_agent_db.tools import records
+
+    mcp = FastMCP(name="test")
+    records.register(mcp, lambda: _StubClient())
+    await mcp.call_tool(
+        "mspbotsagentdb_write_record",
+        {
+            "agent_id": "999",
+            "record_id": "T-1",
+            "business_type": "ticket_sync",
+            "data": {"status": "open"},
+        },
+    )
+
+    assert captured["path"] == "/agents/999/records/T-1"
+    assert captured["body"] == {"business_type": "ticket_sync", "data": {"status": "open"}}
+
+
+@pytest.mark.asyncio
+async def test_write_records_batch_posts_to_batch_upsert_endpoint():
+    captured = {}
+
+    class _StubClient:
+        async def post(self, path, json_body=None):
+            captured["path"] = path
+            captured["body"] = json_body
+            return {"written": 2, "deduplicated": 0}
+
+    from mspbots_agent_db.tools import records
+
+    mcp = FastMCP(name="test")
+    records.register(mcp, lambda: _StubClient())
+    batch = [
+        {"record_id": "T-1", "business_type": "ticket_sync", "data": {"a": 1}},
+        {"record_id": "T-2", "business_type": "ticket_sync", "data": {"a": 2}},
+    ]
+    await mcp.call_tool(
+        "mspbotsagentdb_write_records_batch", {"agent_id": "999", "records": batch}
+    )
+
+    assert captured["path"] == "/agents/999/records:batchUpsert"
+    assert captured["body"] == {"records": batch}
+
+
+@pytest.mark.asyncio
+async def test_delete_record_calls_the_single_record_endpoint():
+    captured = {}
+
+    class _StubClient:
+        async def delete(self, path):
+            captured["path"] = path
+            return {"deleted": True}
+
+    from mspbots_agent_db.tools import records
+
+    mcp = FastMCP(name="test")
+    records.register(mcp, lambda: _StubClient())
+    await mcp.call_tool(
+        "mspbotsagentdb_delete_record", {"agent_id": "999", "record_id": "T-1"}
+    )
+
+    assert captured["path"] == "/agents/999/records/T-1"

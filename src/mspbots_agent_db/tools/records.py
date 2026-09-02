@@ -1,8 +1,10 @@
-"""Record read tools — filtered query + single-record lookup.
+"""Record tools — filtered query, single-record lookup, write, and delete.
 
-Endpoint paths/params/response shapes were checked against a real
-`pg-data-ingest` INT deployment (not just the handover doc) — see README
-Known Gaps for exactly what was and wasn't exercised live.
+Endpoint paths/params/response shapes for the read tools were checked
+against a real `pg-data-ingest` INT deployment (not just the handover
+doc) — see README Known Gaps for exactly what was and wasn't exercised
+live; the write/delete tools below are new with the 2026-09 MCP-API.md
+revision and have not yet had the same live check.
 """
 
 from collections.abc import Callable
@@ -116,6 +118,105 @@ def register(mcp: FastMCP, client_factory: Callable[[], AgentDataClient | None])
             return NO_TOKEN
         try:
             result = await client.get(agent_path(agent_id, f"/records/{record_id}"))
+            return dump_json_capped(result)
+        except AgentDataError as e:
+            return e.to_envelope()
+
+    @mcp.tool(annotations=ToolAnnotations(idempotentHint=True))
+    async def mspbotsagentdb_write_record(
+        agent_id: Annotated[str, Field(description="Which agent this record belongs to.")],
+        record_id: Annotated[
+            str,
+            Field(
+                description="Your own id for this record, unique within the agent "
+                "(letters/digits/_/-/:/. only, max 128 chars)."
+            ),
+        ],
+        business_type: Annotated[
+            str,
+            Field(
+                description="Lowercase business-type tag for this record's shape "
+                '(letters/digits/_/- only, max 64 chars, e.g. "ticket_sync").'
+            ),
+        ],
+        data: Annotated[
+            dict | list,
+            Field(
+                description="The record's JSON payload (object or array, not a bare "
+                "string/number). Max 100KB serialized."
+            ),
+        ],
+        schema_version: Annotated[
+            int | None,
+            Field(description="Optional structure version for this business_type (default 1)."),
+        ] = None,
+    ) -> str:
+        """Create or update one record. Idempotent: writing the same
+        record_id again overwrites it in place (the response's `inserted`
+        is false on an overwrite) — safe to retry after a timeout without
+        risk of a duplicate.
+        """
+        client = client_factory()
+        if client is None:
+            return NO_TOKEN
+        body: dict = {"business_type": business_type, "data": data}
+        if schema_version is not None:
+            body["schema_version"] = schema_version
+        try:
+            result = await client.put(agent_path(agent_id, f"/records/{record_id}"), json_body=body)
+            return dump_json_capped(result)
+        except AgentDataError as e:
+            return e.to_envelope()
+
+    @mcp.tool(annotations=ToolAnnotations(idempotentHint=True))
+    async def mspbotsagentdb_write_records_batch(
+        agent_id: Annotated[str, Field(description="Which agent these records belong to.")],
+        records: Annotated[
+            list[dict],
+            Field(
+                description="1-500 records to write in ONE transaction — all succeed or "
+                'none do. Each: {"record_id", "business_type", "data", '
+                '"schema_version" (optional)} — same constraints as '
+                "mspbotsagentdb_write_record's arguments. Duplicate record_id values "
+                "within the same call collapse to the last occurrence "
+                "(response's `deduplicated` says how many)."
+            ),
+        ],
+    ) -> str:
+        """Write up to 500 records in one all-or-nothing transaction.
+
+        Use this instead of many mspbotsagentdb_write_record calls when
+        writing several records at once — one failure rolls back the
+        whole batch, so a partial batch never lands.
+        """
+        client = client_factory()
+        if client is None:
+            return NO_TOKEN
+        try:
+            result = await client.post(
+                agent_path(agent_id, "/records:batchUpsert"), json_body={"records": records}
+            )
+            return dump_json_capped(result)
+        except AgentDataError as e:
+            return e.to_envelope()
+
+    @mcp.tool(annotations=ToolAnnotations(destructiveHint=True, idempotentHint=True))
+    async def mspbotsagentdb_delete_record(
+        agent_id: Annotated[str, Field(description="Which agent owns this record.")],
+        record_id: Annotated[str, Field(description="Required record ID to delete.")],
+    ) -> str:
+        """Delete one record by its exact record_id.
+
+        Idempotent: deleting an already-deleted (or never-existing) id
+        returns `deleted: false`, not an error — only the record named
+        here is affected, never the whole agent (deleting an entire agent
+        is not exposed by this server).
+        """
+        client = client_factory()
+        if client is None:
+            return NO_TOKEN
+        try:
+            result = await client.delete(agent_path(agent_id, f"/records/{record_id}"))
             return dump_json_capped(result)
         except AgentDataError as e:
             return e.to_envelope()

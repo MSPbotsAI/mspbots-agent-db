@@ -1,7 +1,7 @@
 [project]
 name = "mspbots-agent-db"
 version = "0.1.0"
-description = "MCP server for the MSPbots Agent Data Core (pg-data-ingest) read API — schema discovery, filtered queries, and single-record lookups, scoped to one agent's business-log data"
+description = "MCP server for the MSPbots Agent Data Core (pg-data-ingest) API — schema discovery, filtered queries, single-record read/write/delete, batch writes, and agent listing, scoped to one tenant's business-log data"
 requires-python = ">=3.12"
 dependencies = [
     "mcp[cli]>=1.9.0,<2.0",

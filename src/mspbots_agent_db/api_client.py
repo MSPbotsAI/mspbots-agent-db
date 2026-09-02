@@ -76,20 +76,23 @@ class AgentDataError(Exception):
 def agent_path(agent_id: str, suffix: str = "") -> str:
     """Build a path under the given agent, e.g. agent_path("42", "/stats").
 
-    agent_id is the data-isolation key by design (one LIST partition per
-    agent) — it is not a credential. Authorization only answers "is this
-    token valid", never "which agent may it touch" — any valid token can
-    address any agent_id (a known, documented gap of the underlying app —
-    see README Known Gaps), so tool callers are trusted to pass their own
-    agent_id, same as every other mspbotsagent*-family tool in this
-    platform takes agent_id as a plain argument.
+    agent_id addresses one agent's records within the caller's tenant — it
+    is not a credential. Since the 2026-09 partition-model change, the LIST
+    partition is per-*tenant* (not per-agent as before); cross-tenant access
+    is now blocked by the app-level tenant_id check (see AgentDataClient),
+    but within one tenant, authorization still only answers "is this token
+    valid", never "which agent may it touch" — any valid token for a tenant
+    can address any agent_id within that tenant (a known, documented gap of
+    the underlying app — see README Known Gaps), so tool callers are trusted
+    to pass their own agent_id, same as every other mspbotsagent*-family
+    tool in this platform takes agent_id as a plain argument.
     """
     return f"/agents/{agent_id}{suffix}"
 
 
 class AgentDataClient:
     """Async httpx client wrapping the MSPbots Agent Data Core (pg-data-ingest)
-    read API.
+    API.
 
     Reuses the module-level connection pool (see _get_http_client) across
     every call made through this instance, rather than opening a new
@@ -117,17 +120,30 @@ class AgentDataClient:
     Confirmed by direct testing: a token alone -> "App not found"; token +
     X_Tenant_ID (as a plain header, no cookie needed) -> real data. This is
     a routing-layer requirement, independent of which auth method is used.
+
+    Separately, since the MCP-API.md handover (2026-09-01, partition model
+    moved from per-agent to per-tenant), every *data* endpoint now also
+    requires an app-level `tenant_id` query parameter that pg-data-ingest
+    checks against the JWT's own tenant claim (mismatch -> 403). Per that
+    doc's explicit instruction, this value must never be an LLM-visible
+    tool argument — it's resolved here via `GET /whoami` (bearer token
+    only) and injected into every subsequent call on this instance. It is
+    NOT cached across requests/instances (this server keeps no state
+    between calls, same as the rest of this fleet) — one extra `/whoami`
+    round trip per tool call, resolved once per AgentDataClient instance
+    and reused for any further calls that instance happens to make.
     """
 
-    def __init__(self, token: str, host: str, tenant_id: str):
+    def __init__(self, token: str, host: str, gateway_tenant_id: str):
         self._token = token
-        self._tenant_id = tenant_id
+        self._gateway_tenant_id = gateway_tenant_id
         self._base_url = host.rstrip("/") + _APP_PREFIX
+        self._resolved_tenant_id: str | None = None
 
     def _headers(self) -> dict[str, str]:
         return {
             "Authorization": f"Bearer {self._token}",
-            "X_Tenant_ID": self._tenant_id,
+            "X_Tenant_ID": self._gateway_tenant_id,
             "Content-Type": "application/json",
             "Accept": "application/json",
         }
@@ -137,20 +153,60 @@ class AgentDataClient:
             return {}
         return {k: v for k, v in params.items() if v is not None}
 
+    async def _resolve_tenant_id(self) -> str:
+        """Resolve the JWT's own tenant_id via /whoami, once per instance.
+
+        Deliberately ignores self._gateway_tenant_id for this purpose — that
+        header is only for APISIX pod routing (see class docstring). This
+        value is what pg-data-ingest's own app-level authorization actually
+        checks the tool-call tenant_id against, so it must come from the
+        token itself, not from a value a caller supplied.
+        """
+        if self._resolved_tenant_id is None:
+            resp = await self._send_with_retry(
+                "GET", f"{self._base_url}/whoami", headers=self._headers()
+            )
+            body = self._handle(resp)
+            self._resolved_tenant_id = body["tenant_id"]
+        return self._resolved_tenant_id
+
     async def get(self, path: str, params: dict | None = None) -> Any:
         return await self._request("GET", path, params=params)
 
     async def post(self, path: str, json_body: Any = None) -> Any:
         return await self._request("POST", path, json_body=json_body)
 
+    async def put(self, path: str, json_body: Any = None) -> Any:
+        return await self._request("PUT", path, json_body=json_body)
+
+    async def delete(self, path: str) -> Any:
+        return await self._request("DELETE", path)
+
     async def _request(
         self, method: str, path: str, params: dict | None = None, json_body: Any = None
     ) -> Any:
-        client = _get_http_client()
-        url = f"{self._base_url}{path}"
-        headers = self._headers()
+        tenant_id = await self._resolve_tenant_id()
         params = self._clean_params(params)
+        params["tenant_id"] = tenant_id
+        resp = await self._send_with_retry(
+            method,
+            f"{self._base_url}{path}",
+            headers=self._headers(),
+            params=params,
+            json_body=json_body,
+        )
+        return self._handle(resp)
 
+    async def _send_with_retry(
+        self,
+        method: str,
+        url: str,
+        *,
+        headers: dict[str, str],
+        params: dict | None = None,
+        json_body: Any = None,
+    ) -> httpx.Response:
+        client = _get_http_client()
         last_exc: Exception | None = None
         for attempt in range(_MAX_RETRIES + 1):
             try:
@@ -169,7 +225,7 @@ class AgentDataClient:
                 await asyncio.sleep(delay)
                 continue
 
-            return self._handle(resp)
+            return resp
 
         # Unreachable in practice (loop always returns or raises above), but
         # keeps type checkers happy and guards against future edits.

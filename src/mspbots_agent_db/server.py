@@ -13,15 +13,17 @@ from .config import Settings
 # Per-request credential isolation via contextvars.
 # GatewayTokenMiddleware sets this before the MCP handler runs.
 # Python asyncio copies context per task, so concurrent SSE connections are isolated.
-# Value is (token, host, tenant_id). agent_id is NOT a credential here —
-# it's a plain tool argument (see api_client.agent_path's docstring): the
-# underlying app's own auth only answers "is this token valid", never
-# "which agent may it touch", so any valid token can address any agent_id
-# (a known gap of the underlying app, not something this server papers
-# over). tenant_id IS required, but for a different reason: it's not
-# app-level auth either, it's what the shared APISIX gateway needs to
-# route to the right tenant's pod (pg-data-ingest is one pod per tenant) —
-# see AgentDataClient's docstring for how this was found.
+# Value is (token, host, gateway_tenant_id). agent_id is NOT a credential
+# here — it's a plain tool argument (see api_client.agent_path's
+# docstring): within one tenant, the underlying app's own auth only
+# answers "is this token valid", never "which agent may it touch", so any
+# valid token can address any agent_id in its own tenant (a known gap of
+# the underlying app, not something this server papers over).
+# gateway_tenant_id IS required, but for routing, not app-level auth: it's
+# what the shared APISIX gateway needs to route to the right tenant's pod
+# (pg-data-ingest is one pod per tenant). The tenant_id pg-data-ingest's
+# own app-level authorization actually checks is a *separate* value,
+# resolved by AgentDataClient itself via /whoami — see its docstring.
 _gateway_creds_var: contextvars.ContextVar[tuple[str, str, str] | None] = contextvars.ContextVar(
     "mspbots_agent_data_gateway_creds", default=None
 )
@@ -32,8 +34,8 @@ def get_client_from_context(settings: Settings) -> AgentDataClient | None:
     creds = _gateway_creds_var.get()
     if not creds:
         return None
-    token, host, tenant_id = creds
-    return AgentDataClient(token, host, tenant_id)
+    token, host, gateway_tenant_id = creds
+    return AgentDataClient(token, host, gateway_tenant_id)
 
 
 class GatewayTokenMiddleware:
@@ -103,24 +105,27 @@ def create_mcp_server(settings: Settings) -> FastMCP:
         instructions=(
             "MSPbots Agent Data Core (pg-data-ingest) is where an agent's business-log "
             "records live — one JSONB row per event, grouped by business_type, with no "
-            "per-business-type table to design or migrate. Every tool takes an agent_id "
-            "(one PostgreSQL partition per agent) — this server exposes only the READ "
-            "side. Typical flow: mspbotsagentdb_get_schemas first, to learn what "
-            "business_types and fields exist for that agent; then "
-            "mspbotsagentdb_query_records with a filter built from those fields; then "
-            "mspbotsagentdb_get_record for one record's full detail. "
+            "per-business-type table to design or migrate. Data is partitioned per "
+            "tenant; most tools also take an agent_id to scope to one agent within that "
+            "tenant. Typical flow: mspbotsagentdb_list_agents if you don't already know "
+            "the agent_id; mspbotsagentdb_get_schemas to learn what business_types and "
+            "fields exist for that agent; mspbotsagentdb_query_records with a filter "
+            "built from those fields; mspbotsagentdb_get_record for one record's full "
+            "detail. mspbotsagentdb_write_record / _write_records_batch upsert one or "
+            "many records; mspbotsagentdb_delete_record removes one. "
             "mspbotsagentdb_get_stats reports storage/usage, not record content. "
-            "Writing, deleting, and admin operations (upsert, delete, re-init, "
-            "cross-agent listing) are intentionally not exposed here — an agent writes "
-            "its own logs directly via the app's HTTP API, not through this MCP."
+            "Deleting an entire agent, triggering maintenance, and re-registering a "
+            "deleted agent are intentionally not exposed here — those are irreversible "
+            "or admin-only operations, not something to hand an LLM."
         ),
         transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False),
     )
 
     client_factory: Callable[[], AgentDataClient | None] = lambda: get_client_from_context(settings)
 
-    from .tools import records, schemas, stats
+    from .tools import agents, records, schemas, stats
 
+    agents.register(mcp, client_factory)
     schemas.register(mcp, client_factory)
     records.register(mcp, client_factory)
     stats.register(mcp, client_factory)
