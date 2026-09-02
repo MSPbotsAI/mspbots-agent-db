@@ -112,11 +112,12 @@ def create_mcp_server(settings: Settings) -> FastMCP:
             "fields exist for that agent; mspbotsagentdb_query_records with a filter "
             "built from those fields; mspbotsagentdb_get_record for one record's full "
             "detail. mspbotsagentdb_write_record / _write_records_batch upsert one or "
-            "many records; mspbotsagentdb_delete_record removes one. "
+            "many records — there is no delete: the underlying API removed both DELETE "
+            "endpoints entirely (data leaves only via retention expiry). "
             "mspbotsagentdb_get_stats reports storage/usage, not record content. "
-            "Deleting an entire agent, triggering maintenance, and re-registering a "
-            "deleted agent are intentionally not exposed here — those are irreversible "
-            "or admin-only operations, not something to hand an LLM."
+            "Re-registering a deleted agent and triggering maintenance are intentionally "
+            "not exposed here — those are admin-only operations, not something to hand "
+            "an LLM."
         ),
         transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False),
     )

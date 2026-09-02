@@ -26,10 +26,6 @@ EXPECTED_TOOLS = {
         {"idempotentHint"},
     ),
     "mspbotsagentdb_write_records_batch": ({"agent_id", "records"}, {"idempotentHint"}),
-    "mspbotsagentdb_delete_record": (
-        {"agent_id", "record_id"},
-        {"destructiveHint", "idempotentHint"},
-    ),
 }
 
 # mspbotsagentdb_list_agents is tenant-scoped, not agent-scoped — it has no
@@ -237,23 +233,3 @@ async def test_write_records_batch_posts_to_batch_upsert_endpoint():
 
     assert captured["path"] == "/agents/999/records:batchUpsert"
     assert captured["body"] == {"records": batch}
-
-
-@pytest.mark.asyncio
-async def test_delete_record_calls_the_single_record_endpoint():
-    captured = {}
-
-    class _StubClient:
-        async def delete(self, path):
-            captured["path"] = path
-            return {"deleted": True}
-
-    from mspbots_agent_db.tools import records
-
-    mcp = FastMCP(name="test")
-    records.register(mcp, lambda: _StubClient())
-    await mcp.call_tool(
-        "mspbotsagentdb_delete_record", {"agent_id": "999", "record_id": "T-1"}
-    )
-
-    assert captured["path"] == "/agents/999/records/T-1"

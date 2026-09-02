@@ -55,6 +55,45 @@ async def test_whoami_is_called_once_and_tenant_id_injected_into_every_call(monk
 
 
 @pytest.mark.asyncio
+async def test_tenant_id_goes_in_body_not_query_string_when_a_body_is_sent(monkeypatch):
+    """MCP-API.md §1's own reference implementation only ever puts
+    tenant_id in ONE place per call: the query string when there's no
+    body, merged into the JSON body when there is one — never both. A
+    POST/PUT call that also carried a tenant_id query param would be
+    diverging from that documented behavior for no reason.
+    """
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        if request.url.path.endswith("/whoami"):
+            return httpx.Response(200, json={"tenant_id": "tenant-xyz"})
+        return httpx.Response(200, json={"inserted": True})
+
+    _install_mock_transport(monkeypatch, handler)
+
+    client = AgentDataClient("token-123", "https://agentint.mspbots.ai", "gateway-tenant-1")
+    await client.put(
+        "/agents/42/records/T-1",
+        json_body={"business_type": "ticket_sync", "data": {"a": 1}},
+    )
+
+    data_calls = [r for r in calls if not r.url.path.endswith("/whoami")]
+    assert len(data_calls) == 1
+    put_request = data_calls[0]
+
+    assert "tenant_id" not in put_request.url.params
+    import json
+
+    sent_body = json.loads(put_request.content)
+    assert sent_body == {
+        "business_type": "ticket_sync",
+        "data": {"a": 1},
+        "tenant_id": "tenant-xyz",
+    }
+
+
+@pytest.mark.asyncio
 async def test_whoami_failure_surfaces_as_agent_data_error(monkeypatch):
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(401, json={"code": "UNAUTHORIZED", "message": "bad token"})

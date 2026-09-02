@@ -80,6 +80,13 @@ def register(mcp: FastMCP, client_factory: Callable[[], AgentDataClient | None])
         until you ask for one more and get nothing back. Stop when a
         response's records array is empty, not when next_cursor looks
         non-null.
+
+        FILTER GOTCHA: a well-formed data.<key> path that matches no
+        registered schema field is accepted, not rejected — it just
+        silently matches zero rows (200, empty), which is easy to mistake
+        for "no matching data" instead of "wrong field name". Check
+        mspbotsagentdb_get_schemas if a filter you expect to match returns
+        nothing.
         """
         client = client_factory()
         if client is None:
@@ -196,27 +203,6 @@ def register(mcp: FastMCP, client_factory: Callable[[], AgentDataClient | None])
             result = await client.post(
                 agent_path(agent_id, "/records:batchUpsert"), json_body={"records": records}
             )
-            return dump_json_capped(result)
-        except AgentDataError as e:
-            return e.to_envelope()
-
-    @mcp.tool(annotations=ToolAnnotations(destructiveHint=True, idempotentHint=True))
-    async def mspbotsagentdb_delete_record(
-        agent_id: Annotated[str, Field(description="Which agent owns this record.")],
-        record_id: Annotated[str, Field(description="Required record ID to delete.")],
-    ) -> str:
-        """Delete one record by its exact record_id.
-
-        Idempotent: deleting an already-deleted (or never-existing) id
-        returns `deleted: false`, not an error — only the record named
-        here is affected, never the whole agent (deleting an entire agent
-        is not exposed by this server).
-        """
-        client = client_factory()
-        if client is None:
-            return NO_TOKEN
-        try:
-            result = await client.delete(agent_path(agent_id, f"/records/{record_id}"))
             return dump_json_capped(result)
         except AgentDataError as e:
             return e.to_envelope()

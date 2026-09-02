@@ -22,21 +22,26 @@ transport).
 - "What's in record T-1042?" → `mspbotsagentdb_get_record`
 - "Log this event" / "update record T-1042" → `mspbotsagentdb_write_record`
 - "Log these 50 events at once" → `mspbotsagentdb_write_records_batch`
-- "Delete record T-1042" → `mspbotsagentdb_delete_record`
 - "How many records has this agent logged, what types does it have most of?" →
   `mspbotsagentdb_get_stats`
 
-Deleting an **entire agent**, triggering maintenance (`POST /maintenance/run`), and
-re-registering a deleted agent (`POST /agents/:id/init`) are **intentionally not
+**There is no delete tool, and there never will be one against this API**: as of
+the 2026-09-02 MCP-API.md revision, both DELETE endpoints (single record, entire
+agent) were removed from pg-data-ingest itself — any DELETE call now 404s
+unconditionally, for any token. Data leaves only via the 30-day retention sweep, or
+direct DBA action on the database. Re-registering a deleted agent
+(`POST /agents/:id/init`) and triggering maintenance are also **intentionally not
 exposed** — MCP-API.md §3 calls these out by name as capabilities that should never
-be handed to an LLM (irreversible or admin-only, not a per-record operation).
+be handed to an LLM (admin-only, not a per-record operation).
 
 ## Tools
 
 授权需要 `X-MSP-Token` / `X-MSP-Host` / `X-MSP-Tenant-Id` 三个请求头；`agent_id` 是**普通工具参数**
 （除 `list_agents` 外），由调用方在每次工具调用里显式传入——见下方 Known Gaps 关于这个设计取舍的说明。
 `tenant_id` **不是**工具参数，也不是上面三个 header 之一——本服务自己用 `X-MSP-Token` 换 `GET /whoami`
-解析出真正的 app 级 tenant_id 并注入到每次下游调用，详见 Authentication 一节。
+解析出真正的 app 级 tenant_id 并注入到每次下游调用（无 body 的调用放查询参数，有 body 的调用合并进
+JSON body——跟 body 一起走，绝不同时出现在两处，`AgentDataClient._request` 严格照 MCP-API.md §1 自带的
+参考实现做），详见 Authentication 一节。
 
 | Tool | 功能 | 参数 |
 |---|---|---|
@@ -46,8 +51,13 @@ be handed to an LLM (irreversible or admin-only, not a per-record operation).
 | `mspbotsagentdb_get_record` | 按 record_id 读单条记录详情 | `agent_id`(必填)、`record_id`(必填) |
 | `mspbotsagentdb_write_record` | 新建或更新单条记录（幂等，同 record_id 再写是原地覆盖） | `agent_id`(必填)、`record_id`(必填)、`business_type`(必填)、`data`(必填)、`schema_version`(可选) |
 | `mspbotsagentdb_write_records_batch` | 单事务批量写入 ≤500 条，全成全败 | `agent_id`(必填)、`records`(必填，每项同上单条写入的字段) |
-| `mspbotsagentdb_delete_record` | 按 record_id 删除单条记录（幂等） | `agent_id`(必填)、`record_id`(必填) |
 | `mspbotsagentdb_get_stats` | 该 agent 的记录数与业务分布统计（`tenant_total_bytes`/`tenant_estimated_rows` 是整租户口径，不是该 agent 的） | `agent_id`(必填) |
+
+**没有删除 tool**——`DELETE /agents/:id/records/:recordId` 和 `DELETE /agents/:id` 两个端点已经从
+pg-data-ingest 服务端整体下线，调用一律 404，跟 token 无关，所以本服务也没有对应的 tool 可以做。
+
+`agent_id` 现在是字符串（`A-Za-z0-9_.-`，1-128 位，不含冒号），**不再限定纯数字**，且前导零是有意义的
+（`"007"` 和 `"7"` 是两个不同的 agent）——之前"1-18位数字、不允许前导零"的旧约束已经作废。
 
 `filters[]` 每项 `{ field, op, value }`：
 
@@ -55,9 +65,11 @@ be handed to an LLM (irreversible or admin-only, not a per-record operation).
 - `op`：`eq` `neq` `gt` `gte` `lt` `lte` `in` `contains` `exists`（`contains`/`exists` 仅限 `data.*`，用在实体列上会 400）
 
 > **翻页坑**：满页时 `next_cursor` 一定非空，即使那已是最后一页——以 `records` 数组为空作为终止条件，不要只看 `next_cursor === null`。
+>
+> **Filter 坑**：语法合法但没有登记过的 `data.<key>` 不会报错，会安静地匹配 0 行（200 空结果），比 400 更难发现是字段名错了还是真的没数据——建议先查一下 `mspbotsagentdb_get_schemas`。
 
 > Backing endpoints: `GET /agents`, `GET /agents/:agentId/schemas`,
-> `POST /agents/:agentId/records:query`, `GET|PUT|DELETE /agents/:agentId/records/:recordId`,
+> `POST /agents/:agentId/records:query`, `GET|PUT /agents/:agentId/records/:recordId`,
 > `POST /agents/:agentId/records:batchUpsert`, `GET /agents/:agentId/stats`。
 > `agentId` 直接来自工具的 `agent_id` 参数；`tenant_id` 由本服务自己解析注入，从不出现在任何工具参数里。
 
@@ -105,9 +117,11 @@ for why; `mspbotsagentdb_list_agents` is the one tool that takes no `agent_id`).
 **`tenant_id` 是第四个必需的值，但既不是 header 也不是工具参数。** MCP-API.md §1 明确要求：这个值
 必须由 MCP server 自己解析、绝不能做成 LLM 可见的参数（填对了没有收益，填错了才会触发本来不该出现的
 403）。本服务的做法：每次真正发起下游调用前，用调用方传入的同一个 `X-MSP-Token` 去调
-`GET /whoami`，把返回的 `tenant_id` 缓存在这次工具调用用到的 client 实例上，再作为查询参数注入每个
-真实数据接口调用。它跟 `X-MSP-Tenant-Id` header 是两个不同的值，服务用途也不同——一个是网关路由
-用的，一个是 App 自己的租户鉴权（不匹配返回 403，`_classify` 里映射成 `unauthorized`）。
+`GET /whoami`，把返回的 `tenant_id` 缓存在这次工具调用用到的 client 实例上，再注入每个真实数据接口
+调用——**没有 body 的调用（GET）放查询参数，有 body 的调用（POST/PUT）合并进 JSON body，两者不会
+同时出现**，严格照抄 MCP-API.md §1 自己给的参考实现，不是本服务自创的做法。它跟 `X-MSP-Tenant-Id`
+header 是两个不同的值，服务用途也不同——一个是网关路由用的，一个是 App 自己的租户鉴权（不匹配返回
+403，`_classify` 里映射成 `unauthorized`）。
 
 ## Environment Variables
 
@@ -148,8 +162,31 @@ curl -X POST http://localhost:8080/mcp \
 
 ## Known Gaps
 
+- **Corrected 2026-09-02 (same-day follow-up): tenant_id was going into the
+  query string on every call, including POST/PUT calls that already had a
+  JSON body.** MCP-API.md §1's own reference implementation puts tenant_id
+  in the query string ONLY when there's no body, and merges it into the
+  JSON body when there is one — never both. This build's first pass always
+  used the query string regardless of method, diverging from the doc's own
+  sample code (missed on first read since the sample was split across two
+  chunks during extraction). Fixed in `AgentDataClient._request`; regression
+  test added in `test_api_client.py`
+  (`test_tenant_id_goes_in_body_not_query_string_when_a_body_is_sent`).
+- **Corrected 2026-09-02 (same-day follow-up): `mspbotsagentdb_delete_record`
+  removed — the underlying DELETE endpoints no longer exist.** A newer
+  `MCP-API.md` revision (same ClickUp comment thread, "Deprecate and remove
+  the API endpoint") states both `DELETE /agents/:id/records/:recordId` and
+  `DELETE /agents/:id` have been removed from pg-data-ingest entirely — any
+  DELETE call now 404s unconditionally, not just for LLM-facing callers.
+  `POST /maintenance/run` was removed too (cleanup is now scheduler-only,
+  no HTTP entry point) — this server never wrapped that one so no code
+  change was needed there. Also per this revision: `agent_id`'s allowed
+  shape widened from "1-18 digits, no leading zero" to a general string
+  (`^[A-Za-z0-9_.-]{1,128}$`, leading zeros now significant) — no client-side
+  validation existed for this in either shape, so no code change was needed,
+  just awareness that agent_id is no longer numeric-only.
 - **Migrated 2026-09-02: partition model moved from per-agent to
-  per-tenant, and this server now writes/deletes too — not just reads.**
+  per-tenant, and this server now writes too — not just reads.**
   Per the newer handover doc (`MCP-API.md`, ClickUp PRD-17749 comment,
   superseding `new_api.md`): the LIST partition is now per-tenant, and
   every data endpoint requires an app-level `tenant_id` query parameter
@@ -161,17 +198,18 @@ curl -X POST http://localhost:8080/mcp \
   instance, never a caller-supplied value, exactly as MCP-API.md §1
   requires — `tenant_id` never appears in any tool's input schema (see
   `test_tools.py`'s `tenant_id must never be a tool argument` assertion).
-  Four new tools were added straight from the doc's §2 tool list:
+  Three new tools were added straight from the doc's §2 tool list:
   `mspbotsagentdb_list_agents`, `mspbotsagentdb_write_record`,
-  `mspbotsagentdb_write_records_batch`, `mspbotsagentdb_delete_record`.
-  Deliberately still NOT exposed, per the doc's own §3 "don't hand these
-  to an LLM" list: deleting an entire agent (`DELETE /agents/:id`),
-  triggering maintenance (`POST /maintenance/run`), and re-registering a
-  deleted agent (`POST /agents/:id/init`) — all irreversible or
-  admin-only. **Not yet verified against a live deployment with real
-  credentials** — unit-tested (including the `/whoami` round trip via
+  `mspbotsagentdb_write_records_batch` (a fourth, `mspbotsagentdb_delete_record`,
+  was added then removed again the same day — see the newer bullet above:
+  the underlying DELETE endpoint was deprecated and removed from the API
+  entirely). Deliberately still NOT exposed, per the doc's own §3 "don't
+  hand these to an LLM" list: re-registering a deleted agent
+  (`POST /agents/:id/init`) and triggering maintenance — admin-only, not
+  per-record operations. **Not yet verified against a live deployment with
+  real credentials** — unit-tested (including the `/whoami` round trip via
   `httpx.MockTransport` in `test_api_client.py`) and smoke-tested through
-  the real MCP protocol locally (`tools/list` returns all 8 tools with the
+  the real MCP protocol locally (`tools/list` returns all 7 tools with the
   expected schemas), but a dummy-credential call against the real INT host
   only got as far as confirming the `/whoami` request actually goes out
   over the wire — not a genuine end-to-end data round trip. The **within-
@@ -259,17 +297,19 @@ curl -X POST http://localhost:8080/mcp \
   server doesn't re-validate the regex patterns from the doc (§4.0) before
   calling — that would just be dead code duplicating a check the API already
   does correctly.
-- **Admin-only endpoints are still not wrapped, by design**: `POST
-  /agents/:id/init` (re-register a deleted agent), `DELETE /agents/:id`
-  (delete an entire agent), `POST /maintenance/run`. Per-record
-  write/delete (`PUT`/`DELETE .../records/:id`, batch upsert) and listing
-  agents (`GET /agents`) WERE wrapped in the 2026-09-02 migration above —
-  this bullet now covers only the three genuinely irreversible/admin-only
-  operations MCP-API.md §3 explicitly says not to hand an LLM. If a future
-  PRD needs one of these exposed, it should go through the same
-  confirm-gate pattern as this fleet's other destructive tools (see
-  `mspbots-agent-mcp`'s `mspbotsagent_clear_sop_section` /
-  `mspbots-forms-mcp`'s `mspbots_forms_form_delete`), not a bare wrapper.
+- **`POST /agents/:id/init` (re-register a deleted agent) is still not
+  wrapped, by design** — the one remaining admin-only operation MCP-API.md
+  §3 explicitly says not to hand an LLM. `DELETE /agents/:id` (delete an
+  entire agent) and `POST /maintenance/run` used to be in this same bucket
+  but no longer need a design justification at all — both were removed
+  from pg-data-ingest itself (see the 2026-09-02 Known Gaps entry above),
+  so there is nothing left to deliberately not-wrap. Per-record write
+  (`PUT .../records/:id`, batch upsert) and listing agents (`GET /agents`)
+  WERE wrapped in the 2026-09-02 migration below. If a future PRD needs
+  `init` exposed, it should go through the same confirm-gate pattern as
+  this fleet's other destructive tools (see `mspbots-agent-mcp`'s
+  `mspbotsagent_clear_sop_section` / `mspbots-forms-mcp`'s
+  `mspbots_forms_form_delete`), not a bare wrapper.
 - **Tested only against `.venv`-local `pytest`, not the PG14→PG18 gap the
   handover doc flags.** The handover doc notes the underlying app's own test
   suite (415 assertions) was run on PostgreSQL 14.12, while INT runs

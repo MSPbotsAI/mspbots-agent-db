@@ -123,15 +123,18 @@ class AgentDataClient:
 
     Separately, since the MCP-API.md handover (2026-09-01, partition model
     moved from per-agent to per-tenant), every *data* endpoint now also
-    requires an app-level `tenant_id` query parameter that pg-data-ingest
-    checks against the JWT's own tenant claim (mismatch -> 403). Per that
-    doc's explicit instruction, this value must never be an LLM-visible
-    tool argument — it's resolved here via `GET /whoami` (bearer token
-    only) and injected into every subsequent call on this instance. It is
-    NOT cached across requests/instances (this server keeps no state
-    between calls, same as the rest of this fleet) — one extra `/whoami`
-    round trip per tool call, resolved once per AgentDataClient instance
-    and reused for any further calls that instance happens to make.
+    requires an app-level `tenant_id` that pg-data-ingest checks against
+    the JWT's own tenant claim (mismatch -> 403) — as a query parameter on
+    a call with no body, or merged into the JSON body on a call that has
+    one (never both; this matches MCP-API.md §1's own reference
+    implementation exactly, not a guess). Per that doc's explicit
+    instruction, this value must never be an LLM-visible tool argument —
+    it's resolved here via `GET /whoami` (bearer token only) and injected
+    into every subsequent call on this instance. It is NOT cached across
+    requests/instances (this server keeps no state between calls, same as
+    the rest of this fleet) — one extra `/whoami` round trip per tool
+    call, resolved once per AgentDataClient instance and reused for any
+    further calls that instance happens to make.
     """
 
     def __init__(self, token: str, host: str, gateway_tenant_id: str):
@@ -179,15 +182,22 @@ class AgentDataClient:
     async def put(self, path: str, json_body: Any = None) -> Any:
         return await self._request("PUT", path, json_body=json_body)
 
-    async def delete(self, path: str) -> Any:
-        return await self._request("DELETE", path)
-
     async def _request(
         self, method: str, path: str, params: dict | None = None, json_body: Any = None
     ) -> Any:
         tenant_id = await self._resolve_tenant_id()
         params = self._clean_params(params)
-        params["tenant_id"] = tenant_id
+        # MCP-API.md's own reference implementation (§1) injects tenant_id
+        # into the JSON body when one exists, and into the query string only
+        # when it doesn't — never both. A body-carrying call (POST/PUT) that
+        # also got a tenant_id query param would still work today, but the
+        # doc treats query-string tenant_id on a body call as undefined
+        # behavior, so match its own sample exactly rather than relying on
+        # that.
+        if json_body is not None:
+            json_body = {**json_body, "tenant_id": tenant_id}
+        else:
+            params["tenant_id"] = tenant_id
         resp = await self._send_with_retry(
             method,
             f"{self._base_url}{path}",
