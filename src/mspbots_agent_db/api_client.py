@@ -11,6 +11,23 @@ from ._json import error_envelope
 # Callers pass the full sub-path below this prefix, e.g. "/agents/<id>/stats".
 _APP_PREFIX = "/apps/pg-data-ingest/api/agent-data"
 
+
+def _normalize_host(raw: str) -> str:
+    """Strip a trailing slash and prepend https:// when the caller sent a bare host.
+
+    The scheme is not optional: _base_url is only ever concatenated with
+    _APP_PREFIX, so a bare host would make every request raise
+    httpx.UnsupportedProtocol. This used to live in MCP-Management-Service's
+    MspbotsAgentDbCredentialMiddleware, which normalised at credential-write
+    time; doing it here instead also covers rows stored before that middleware
+    existed, and drops this vendor's last reason to need one.
+    """
+    host = (raw or "").strip().rstrip("/")
+    if host and not host.startswith("http://") and not host.startswith("https://"):
+        host = f"https://{host}"
+    return host
+
+
 _TIMEOUT = httpx.Timeout(connect=5.0, read=30.0, write=10.0, pool=5.0)
 # Transport-level auto-retry only for genuinely transient failures. 409
 # (AGENT_DELETING) is deliberately excluded — an in-progress DROP PARTITION
@@ -140,7 +157,7 @@ class AgentDataClient:
     def __init__(self, token: str, host: str, gateway_tenant_id: str):
         self._token = token
         self._gateway_tenant_id = gateway_tenant_id
-        self._base_url = host.rstrip("/") + _APP_PREFIX
+        self._base_url = _normalize_host(host) + _APP_PREFIX
         self._resolved_tenant_id: str | None = None
 
     def _headers(self) -> dict[str, str]:

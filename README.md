@@ -36,9 +36,9 @@ be handed to an LLM (admin-only, not a per-record operation).
 
 ## Tools
 
-授权需要 `X-MSP-Token` / `X-MSP-Host` / `X-MSP-Tenant-Id` 三个请求头；`agent_id` 是**普通工具参数**
+授权需要 `X-API-Key` / `X-MSP-Host` / `X-MSP-Tenant-Id` 三个请求头；`agent_id` 是**普通工具参数**
 （除 `list_agents` 外），由调用方在每次工具调用里显式传入——见下方 Known Gaps 关于这个设计取舍的说明。
-`tenant_id` **不是**工具参数，也不是上面三个 header 之一——本服务自己用 `X-MSP-Token` 换 `GET /whoami`
+`tenant_id` **不是**工具参数，也不是上面三个 header 之一——本服务自己用 `X-API-Key` 换 `GET /whoami`
 解析出真正的 app 级 tenant_id 并注入到每次下游调用（无 body 的调用放查询参数，有 body 的调用合并进
 JSON body——跟 body 一起走，绝不同时出现在两处，`AgentDataClient._request` 严格照 MCP-API.md §1 自带的
 参考实现做），详见 Authentication 一节。
@@ -106,9 +106,16 @@ MCP caller/gateway):
 
 | Header | 类型 | 是否必填 | 字段描述 | Example |
 |---|---|---|---|---|
-| `X-MSP-Token` | string | 必填 | 平台签发的 EdDSA JWT。本服务原样转发为下游请求的 `Authorization: Bearer <token>`——这是 Agent Data Core 唯一会长期支持的凭证类型（见下方 Known Gaps 的版本迁移说明）。 | `X-MSP-Token: <jwt>` |
+| `X-API-Key` | string | 必填 | 平台签发的 EdDSA JWT。本服务原样转发为下游请求的 `Authorization: Bearer <token>`——这是 Agent Data Core 唯一会长期支持的凭证类型（见下方 Known Gaps 的版本迁移说明）。 | `X-API-Key: <jwt>` |
 | `X-MSP-Host` | string | 必填 | Agent Data Core API 所在的 host。 | `X-MSP-Host: https://agentint.mspbots.ai` |
 | `X-MSP-Tenant-Id` | string | 必填 | **不是App级鉴权**，是共享网关（APISIX）用来决定转发到哪个租户pod的路由标识（pg-data-ingest一租户一pod）。本服务转发为下游请求的 `X_Tenant_ID` header。缺这个会在网关层直接被拦，返回一个跟pg-data-ingest无关的通用 `{"error":"App not found"}`，不会到达App自己的鉴权/业务逻辑——见 Known Gaps。 | `X-MSP-Tenant-Id: <tenant-uuid>` |
+
+> ⏳ **过渡期兼容（2026-09-23 起）**：`X-API-Key` 取代了原来的 `X-MSP-Token`。改名前写入的
+> 租户凭据仍以旧名存在注册库里、由网关原样注入，因此中间件在读不到 `X-API-Key` 时会回退读
+> `X-MSP-Token`；两个都在时以 `X-API-Key` 为准。等所有租户凭据都按新名重存一遍后，删掉
+> `server.py` 里那段回退和 `tests/test_middleware.py::test_legacy_token_header_is_still_accepted`。
+>
+> `X-MSP-Tenant-Id` **不受本次改名影响**，仍然必填，仍然转发给下游。
 
 Missing any of the three headers returns `401 Unauthorized`. `agent_id` is **not** a
 header — it's a required argument on every agent-scoped tool call (see Known Gaps
@@ -116,7 +123,7 @@ for why; `mspbotsagentdb_list_agents` is the one tool that takes no `agent_id`).
 
 **`tenant_id` 是第四个必需的值，但既不是 header 也不是工具参数。** MCP-API.md §1 明确要求：这个值
 必须由 MCP server 自己解析、绝不能做成 LLM 可见的参数（填对了没有收益，填错了才会触发本来不该出现的
-403）。本服务的做法：每次真正发起下游调用前，用调用方传入的同一个 `X-MSP-Token` 去调
+403）。本服务的做法：每次真正发起下游调用前，用调用方传入的同一个 `X-API-Key` 去调
 `GET /whoami`，把返回的 `tenant_id` 缓存在这次工具调用用到的 client 实例上，再注入每个真实数据接口
 调用——**没有 body 的调用（GET）放查询参数，有 body 的调用（POST/PUT）合并进 JSON body，两者不会
 同时出现**，严格照抄 MCP-API.md §1 自己给的参考实现，不是本服务自创的做法。它跟 `X-MSP-Tenant-Id`
@@ -138,7 +145,7 @@ POST http://localhost:8080/mcp
 
 Connect your MCP client with:
 - Transport: `http` (Streamable HTTP / SSE)
-- Headers: `X-MSP-Token`, `X-MSP-Host`, `X-MSP-Tenant-Id` (all required)
+- Headers: `X-API-Key`, `X-MSP-Host`, `X-MSP-Tenant-Id` (all required)
 
 ## 测试示例 (Test Example)
 
@@ -146,7 +153,7 @@ Connect your MCP client with:
 curl -X POST http://localhost:8080/mcp \
   -H "Content-Type: application/json" \
   -H "Accept: application/json, text/event-stream" \
-  -H "X-MSP-Token: <jwt>" \
+  -H "X-API-Key: <jwt>" \
   -H "X-MSP-Host: https://agentint.mspbots.ai" \
   -H "X-MSP-Tenant-Id: <tenant-uuid>" \
   -d '{
@@ -233,6 +240,11 @@ curl -X POST http://localhost:8080/mcp \
   manually-typed "Agent Data Core API Key" credential field — that should be
   replaced with an auto-injected `X-MSP-Token` (same as `X-MSP-Host` and
   `X-MSP-Tenant-Id` already are), not something an admin re-types.
+  *(Naming note, 2026-09-23: the inbound header described in this bullet was
+  later renamed `X-MSP-Token` → `X-API-Key`; the text above keeps the name
+  that was current on 2026-08-31. Do not confuse it with the `X-API-Key`
+  this same bullet says pg-data-ingest is deleting — that one is a downstream
+  credential type this server never sends.)*
 - **Golden-set tool-selection test run 2026-08-31** (20 utterances covering
   all 4 tools + the `query_records`/`get_record` overlap + 3 negative
   controls for write/delete/list-all): 19/20 unambiguous correct dispatches
