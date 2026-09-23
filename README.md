@@ -106,7 +106,7 @@ MCP caller/gateway):
 
 | Header | 类型 | 是否必填 | 字段描述 | Example |
 |---|---|---|---|---|
-| `X-API-Key` | string | 必填 | 平台签发的 EdDSA JWT。本服务原样转发为下游请求的 `Authorization: Bearer <token>`——这是 Agent Data Core 唯一会长期支持的凭证类型（见下方 Known Gaps 的版本迁移说明）。 | `X-API-Key: <jwt>` |
+| `X-API-Key` | string | 必填 | 平台签发的 API key（`mbk_` 前缀，不透明单段，**不是 JWT**）。本服务**原样透传**为下游请求的同名 `X-API-Key` header，不改名、不重新封装。JWT 已于 PRD-19165 弃用（会自动过期，存进长期凭据必然失效）。 | `X-API-Key: mbk_xxx` |
 | `X-MSP-Host` | string | 必填 | Agent Data Core API 所在的 host。 | `X-MSP-Host: https://agentint.mspbots.ai` |
 | `X-MSP-Tenant-Id` | string | 必填 | **不是App级鉴权**，是共享网关（APISIX）用来决定转发到哪个租户pod的路由标识（pg-data-ingest一租户一pod）。本服务转发为下游请求的 `X_Tenant_ID` header。缺这个会在网关层直接被拦，返回一个跟pg-data-ingest无关的通用 `{"error":"App not found"}`，不会到达App自己的鉴权/业务逻辑——见 Known Gaps。 | `X-MSP-Tenant-Id: <tenant-uuid>` |
 
@@ -201,7 +201,7 @@ curl -X POST http://localhost:8080/mcp \
   -> 403). This closes the *cross-tenant* half of the isolation gap the
   previous doc/README called out — a token can no longer reach another
   tenant's data at all. Implemented here as `AgentDataClient._resolve_tenant_id`:
-  one `GET /whoami` call (bearer token only) per tool-call's client
+  one `GET /whoami` call (credential only, no tenant_id) per tool-call's client
   instance, never a caller-supplied value, exactly as MCP-API.md §1
   requires — `tenant_id` never appears in any tool's input schema (see
   `test_tools.py`'s `tenant_id must never be a tool argument` assertion).
@@ -223,6 +223,15 @@ curl -X POST http://localhost:8080/mcp \
   tenant** isolation gap below is explicitly still open per MCP-API.md §8
   ("同一租户内部任何有效 token 都能读写任意 agent 的数据") — this migration
   did not touch that.
+- **Reversed 2026-09-23 (PRD-19165): auth is the platform API key, passed
+  through verbatim as `X-API-Key`.** JWTs expire on their own, so a
+  long-lived tenant credential holding one is broken by design — PRD had
+  five of this connector's scopes dead for 2–9 days, some holding 1-hour
+  browser session tokens. The API key has no expiry. This supersedes the
+  2026-08-31 bullet below, which is kept for the reasoning, not the
+  conclusion. If pg-data-ingest does not accept `X-API-Key` yet, that is an
+  upstream problem to push on — not a reason for this client to keep
+  sending a credential the platform no longer issues.
 - **Migrated 2026-08-31: auth is now the platform JWT (`X-MSP-Token` →
   `Authorization: Bearer <token>`), not `X-API-Key`.** Per a newer API doc
   (`new_api.md`, ClickUp PRD-17749 comment) covering `@app/pg-data-ingest@0.0.4`

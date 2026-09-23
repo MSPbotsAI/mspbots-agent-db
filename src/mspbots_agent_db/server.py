@@ -45,11 +45,12 @@ class GatewayTokenMiddleware:
     request headers and stores them in the contextvar. Returns 401 if any is
     missing on /mcp requests.
 
-    X-API-Key carries the platform's own EdDSA JWT, forwarded verbatim as
-    Authorization: Bearer <token> — same convention as the sibling
-    mspbots-agent-mcp/mspbots-fleet-mcp connectors, and the only credential
-    pg-data-ingest's own upcoming release still accepts (see
-    AgentDataClient's docstring).
+    X-API-Key carries the platform-issued API key and is passed through to
+    pg-data-ingest under that same header name, byte-for-byte (PRD-19165 —
+    same convention as the sibling mspbots-agent-mcp/mspbots-fleet-mcp
+    connectors). It replaced the platform JWT, which expired on its own and
+    so could not survive being stored as a tenant credential; see
+    AgentDataClient's docstring for the reversal that decision went through.
 
     Beware a name collision: this inbound X-API-Key is the gateway-injected
     platform JWT. The "X-API-Key" that AgentDataClient's docstring and the

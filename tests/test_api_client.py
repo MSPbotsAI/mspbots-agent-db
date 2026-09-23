@@ -51,7 +51,9 @@ async def test_whoami_is_called_once_and_tenant_id_injected_into_every_call(monk
     # The gateway-routing header is still sent on every call, whoami included.
     for r in calls:
         assert r.headers["x_tenant_id"] == "gateway-tenant-1"
-        assert r.headers["authorization"] == "Bearer token-123"
+        # Passed through verbatim, under the platform's own header name.
+        assert r.headers["x-api-key"] == "token-123"
+        assert "authorization" not in r.headers
 
 
 @pytest.mark.asyncio

@@ -115,18 +115,22 @@ class AgentDataClient:
     every call made through this instance, rather than opening a new
     connection per request.
 
-    Auth is the platform's own EdDSA JWT, forwarded verbatim as
-    `Authorization: Bearer <token>` — not an X-API-Key. This was a
-    deliberate choice, not the only option: the currently-live INT build
-    still also accepts X-API-Key (a separate credential type configured
-    per tenant), but pg-data-ingest's own upcoming release (@0.0.4, INT
-    branch, not yet deployed as of this writing — its own /health response
-    still includes `api_keys_configured`, the documented tell for old vs.
-    new) deletes the X-API-Key code path entirely and keeps only the JWT.
-    Standardizing on the JWT now means this client keeps working across
-    that upgrade with no further change, and it also matches the
-    convention every other mb-platform-* client in this fleet
-    (mspbots-agent-mcp, mspbots-fleet-mcp) already uses.
+    Auth is the platform-issued API key, passed through verbatim as
+    `X-API-Key`. Whatever the tenant stored arrives at pg-data-ingest
+    byte-for-byte: this client never re-wraps, re-names or re-signs it.
+
+    This reverses an earlier decision recorded here, so the reasoning is
+    worth keeping. That decision standardized on the platform's EdDSA JWT
+    (`Authorization: Bearer`) because pg-data-ingest's @0.0.4 release
+    deletes its X-API-Key code path and keeps only the JWT. PRD-19165
+    overrides it platform-wide: JWTs expire on their own, and long-lived
+    tenant credentials holding one are broken by design — PRD had five
+    mspbots-agent-db scopes dead for 2–9 days, some holding 1-hour
+    browser session tokens. The API key has no expiry, so it is the only
+    credential that survives being stored. An upstream that does not
+    accept it yet is an upstream problem to push on, not a reason for
+    this client to keep sending a credential the platform no longer
+    issues.
 
     X_Tenant_ID is required on every request even though pg-data-ingest's
     own auth docs never mention it: it's deployed one pod per tenant, and
@@ -146,7 +150,7 @@ class AgentDataClient:
     one (never both; this matches MCP-API.md §1's own reference
     implementation exactly, not a guess). Per that doc's explicit
     instruction, this value must never be an LLM-visible tool argument —
-    it's resolved here via `GET /whoami` (bearer token only) and injected
+    it's resolved here via `GET /whoami` (credential only, no tenant_id) and injected
     into every subsequent call on this instance. It is NOT cached across
     requests/instances (this server keeps no state between calls, same as
     the rest of this fleet) — one extra `/whoami` round trip per tool
@@ -162,7 +166,7 @@ class AgentDataClient:
 
     def _headers(self) -> dict[str, str]:
         return {
-            "Authorization": f"Bearer {self._token}",
+            "X-API-Key": self._token,
             "X_Tenant_ID": self._gateway_tenant_id,
             "Content-Type": "application/json",
             "Accept": "application/json",
