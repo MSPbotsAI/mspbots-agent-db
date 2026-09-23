@@ -41,15 +41,21 @@ def get_client_from_context(settings: Settings) -> AgentDataClient | None:
 class GatewayTokenMiddleware:
     """ASGI middleware.
 
-    Reads X-MSP-Host, X-MSP-Token, and X-MSP-Tenant-Id (all required) from
+    Reads X-MSP-Host, X-API-Key, and X-MSP-Tenant-Id (all required) from
     request headers and stores them in the contextvar. Returns 401 if any is
     missing on /mcp requests.
 
-    X-MSP-Token carries the platform's own EdDSA JWT, forwarded verbatim as
+    X-API-Key carries the platform's own EdDSA JWT, forwarded verbatim as
     Authorization: Bearer <token> — same convention as the sibling
     mspbots-agent-mcp/mspbots-fleet-mcp connectors, and the only credential
     pg-data-ingest's own upcoming release still accepts (see
     AgentDataClient's docstring).
+
+    Beware a name collision: this inbound X-API-Key is the gateway-injected
+    platform JWT. The "X-API-Key" that AgentDataClient's docstring and the
+    README's Known Gaps talk about is a *different*, downstream-only credential
+    type that pg-data-ingest is removing from its own code. The two never meet
+    — nothing here ever sends an X-API-Key header downstream.
     """
 
     def __init__(self, app: ASGIApp, settings: Settings):
@@ -67,7 +73,15 @@ class GatewayTokenMiddleware:
             return
 
         request = Request(scope)
-        token = request.headers.get("x-msp-token")
+        token = request.headers.get("x-api-key")
+        if not token:
+            # NOTE(transition, 2026-09-23): X-API-Key replaced X-MSP-Token as the
+            # credential header name. Credential rows written before the rename
+            # still hold the old key and the gateway injects whatever is stored,
+            # so keep honouring it until every tenant's credential has been
+            # re-saved under X-API-Key. Remove this fallback — and
+            # test_legacy_token_header_is_still_accepted — once that is done.
+            token = request.headers.get("x-msp-token")
         host = request.headers.get("x-msp-host")
         tenant_id = request.headers.get("x-msp-tenant-id")
         if not token or not host or not tenant_id:
@@ -75,12 +89,12 @@ class GatewayTokenMiddleware:
                 {
                     "error": "Missing credentials",
                     "message": (
-                        "This server requires the X-MSP-Token header (Agent Data Core "
+                        "This server requires the X-API-Key header (Agent Data Core "
                         "platform JWT), the X-MSP-Host header (Agent Data Core API host), "
                         "and the X-MSP-Tenant-Id header (needed for the shared gateway to "
                         "route to the right tenant's pod, not for app-level auth)"
                     ),
-                    "required_headers": ["X-MSP-Token", "X-MSP-Host", "X-MSP-Tenant-Id"],
+                    "required_headers": ["X-API-Key", "X-MSP-Host", "X-MSP-Tenant-Id"],
                     "optional_headers": [],
                 },
                 status_code=401,
